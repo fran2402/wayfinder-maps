@@ -64,7 +64,9 @@ import app.wayfinder.data.LatLon
 import app.wayfinder.map.MapController
 import app.wayfinder.map.MapPalette
 import app.wayfinder.map.RouteDrawing
+import app.wayfinder.ui.components.LinePills
 import app.wayfinder.ui.components.MapHost
+import app.wayfinder.ui.components.OverlayPills
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
 import app.wayfinder.ui.components.SearchOverlay
@@ -111,8 +113,17 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     LaunchedEffect(vm.hasLocationPermission, mapReady) {
         if (vm.hasLocationPermission && mapReady) controller.enableLocation()
     }
-    LaunchedEffect(vm.showNetwork, mapReady) { controller.setNetworkVisible(vm.showNetwork) }
-    LaunchedEffect(vm.network, mapReady) { controller.setNetwork(vm.network) }
+    LaunchedEffect(vm.showTransit, mapReady) { controller.setNetworkVisible(vm.showTransit) }
+    LaunchedEffect(vm.showBike, mapReady) { controller.setBikeVisible(vm.showBike) }
+    LaunchedEffect(vm.transit, mapReady) { controller.setTransit(vm.transit) }
+    LaunchedEffect(vm.bike, mapReady) { controller.setBike(vm.bike) }
+    LaunchedEffect(vm.highlightedLine, vm.transit, mapReady) { controller.highlightLine(vm.highlightedLine) }
+
+    // Make sure overlays know the current viewport even before the first camera move ends.
+    fun syncViewport() {
+        val bounds = controller.visibleBounds() ?: return
+        vm.onViewport(bounds, controller.zoom())
+    }
     LaunchedEffect(vm.itineraries, vm.selected, vm.origin, vm.destination, vm.myLocation, palette, mapReady) {
         val dest = vm.destination
         controller.setRoute(
@@ -134,7 +145,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
             controller.fit(
                 points,
                 left = 48.dp.roundToPx(),
-                top = (statusTop + 190.dp).roundToPx(),
+                top = (statusTop + 250.dp).roundToPx(),
                 right = 48.dp.roundToPx(),
                 bottom = (SheetPeek + 32.dp).roundToPx(),
             )
@@ -166,10 +177,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         selected = vm.selected,
                         loading = vm.loading,
                         error = vm.error,
-                        showNetwork = vm.showNetwork,
                         onSelect = vm::select,
                         onRetry = vm::plan,
-                        onToggleNetwork = vm::toggleNetwork,
                     )
                 }
             } else {
@@ -182,8 +191,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 MapHost(
                     controller = controller,
                     palette = palette,
-                    showNetwork = vm.showNetwork,
-                    compassTopPx = (statusTop + 210.dp).roundToPx(),
+                    compassTopPx = (statusTop + 260.dp).roundToPx(),
                     attributionBottomPx = (navBottom + 8.dp).roundToPx(),
                     sidePx = 16.dp.roundToPx(),
                     onMapReady = { mapReady = true },
@@ -198,12 +206,16 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
             // ---------- Top: search pill or trip card ----------
             Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(vertical = 8.dp)
                     .fillMaxWidth(),
             ) {
+              Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
+              ) {
                 AnimatedContent(
                     targetState = vm.destination != null,
                     transitionSpec = {
@@ -232,8 +244,25 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
                     }
                 }
+                OverlayPills(
+                    transitOn = vm.showTransit,
+                    transitLoading = vm.transitLoading,
+                    bikeOn = vm.showBike,
+                    bikeLoading = vm.bikeLoading,
+                    onTransit = { syncViewport(); vm.toggleTransit() },
+                    onBike = { syncViewport(); vm.toggleBike() },
+                )
+              }
+                val lines = vm.transit?.legend.orEmpty()
                 AnimatedVisibility(
-                    visible = vm.showNetwork && vm.networkHint != null,
+                    visible = vm.showTransit && lines.isNotEmpty(),
+                    enter = fadeIn() + slideInVertically { -it / 2 },
+                    exit = fadeOut(),
+                ) {
+                    LinePills(lines = lines, highlighted = vm.highlightedLine, onClick = vm::highlight)
+                }
+                AnimatedVisibility(
+                    visible = vm.overlayHint != null,
                     enter = fadeIn() + scaleIn(initialScale = 0.9f),
                     exit = fadeOut() + scaleOut(targetScale = 0.9f),
                     modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -243,9 +272,10 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         color = MaterialTheme.colorScheme.inverseSurface,
                         contentColor = MaterialTheme.colorScheme.inverseOnSurface,
                         shadowElevation = 4.dp,
+                        modifier = Modifier.padding(horizontal = 16.dp),
                     ) {
                         Text(
-                            vm.networkHint.orEmpty(),
+                            vm.overlayHint.orEmpty(),
                             style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         )
@@ -262,7 +292,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     .padding(end = 16.dp, bottom = if (vm.planning) 0.dp else 24.dp)
                     .navigationBarsPadding(),
             ) {
-                NetworkButton(on = vm.showNetwork, loading = vm.networkLoading, onClick = vm::toggleNetwork)
                 FloatingActionButton(
                     onClick = {
                         val loc = vm.myLocation
@@ -309,40 +338,4 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
     BackHandler(enabled = vm.searchTarget != null) { vm.closeSearch() }
     BackHandler(enabled = vm.searchTarget == null && vm.planning) { vm.clearTrip() }
-}
-
-/** Toggles the public-transport network layer; morphs shape and colour when on. */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun NetworkButton(on: Boolean, loading: Boolean, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val container by animateColorAsState(
-        if (on) colors.tertiary else colors.surfaceContainerHigh,
-        MaterialTheme.motionScheme.defaultEffectsSpec(), label = "netColor",
-    )
-    val content by animateColorAsState(
-        if (on) colors.onTertiary else colors.onSurface,
-        MaterialTheme.motionScheme.defaultEffectsSpec(), label = "netContent",
-    )
-    val corner by animateDpAsState(
-        if (on) 16.dp else 28.dp,
-        MaterialTheme.motionScheme.defaultSpatialSpec(), label = "netCorner",
-    )
-    FloatingActionButton(
-        onClick = onClick,
-        shape = RoundedCornerShape(corner),
-        containerColor = container,
-        contentColor = content,
-        modifier = Modifier.size(56.dp),
-    ) {
-        if (loading) {
-            LoadingIndicator(Modifier.size(30.dp), color = content)
-        } else {
-            Icon(
-                if (on) Ph.Filled.Path else Ph.Path,
-                contentDescription = if (on) "Hide transit network" else "Show transit network",
-                modifier = Modifier.size(24.dp),
-            )
-        }
-    }
 }

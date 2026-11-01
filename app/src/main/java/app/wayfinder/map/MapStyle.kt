@@ -85,14 +85,21 @@ object MapStyle {
     const val SRC_ROUTE_ALT = "route-alt"
     const val SRC_ROUTE_STOPS = "route-stops"
     const val SRC_MARKERS = "markers"
-    const val SRC_NETWORK = "network"
-    const val SRC_NETWORK_STOPS = "network-stops"
+    const val SRC_NETWORK = "transit"
+    const val SRC_NETWORK_STOPS = "transit-stops"
+    const val SRC_BIKE = "bike"
 
-    /** Layers shown only while the public-transport network is switched on. */
+    /** Layers shown only while the public-transport overlay is switched on. */
     val networkLayers = listOf(
         "net-tiles-casing", "net-tiles", "net-lines-casing", "net-lines",
         "net-stops", "net-line-labels", "net-stations",
     )
+
+    /** Layers whose opacity follows the highlighted line. */
+    val transitLineLayers = listOf("net-lines-casing", "net-lines")
+
+    /** Layers shown only while the bike-route overlay is switched on. */
+    val bikeLayers = listOf("bike-tiles-casing", "bike-tiles", "bike-lines-casing", "bike-lines", "bike-labels")
 
     /** Layers that are dimmed while the network is on, so the lines stand out. */
     val baseRailLayers = listOf("rail", "rail-hatch", "transit-base")
@@ -100,7 +107,7 @@ object MapStyle {
     private const val MEDIUM = "WayfinderMedium"
     private const val BOLD = "WayfinderBold"
 
-    fun build(p: MapPalette, showNetwork: Boolean): String {
+    fun build(p: MapPalette, showNetwork: Boolean, showBike: Boolean = false): String {
         val layers = JSONArray()
         fun add(l: JSONObject) { layers.put(l) }
 
@@ -215,6 +222,36 @@ object MapStyle {
             "monorail", "#00A3A3",
             "funicular", "#B0761E",
             if (p.dark) "#AEB8C7" else "#3D4A5C")
+        val bikeVis = if (showBike) "visible" else "none"
+        val cyclewayFilter = arr("all", eq("class", "path"), eq("subclass", "cycleway"))
+        add(layer("bike-tiles-casing", "line", "transportation", minzoom = 11.0, visibility = bikeVis,
+            filter = cyclewayFilter,
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj(
+                "line-color" to p.surface,
+                "line-width" to zoomExp(1.4, 11 to 2.0, 14 to 4.0, 18 to 9.0),
+            )))
+        add(layer("bike-tiles", "line", "transportation", minzoom = 11.0, visibility = bikeVis,
+            filter = cyclewayFilter,
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj(
+                "line-color" to if (p.dark) "#5FD08A" else "#1F9D55",
+                "line-width" to zoomExp(1.4, 11 to 0.8, 14 to 2.0, 18 to 5.0),
+            )))
+        add(layer("bike-lines-casing", "line", source = SRC_BIKE, visibility = bikeVis,
+            layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
+            paint = obj(
+                "line-color" to p.surface,
+                "line-width" to zoomLinear(9 to 3.0, 13 to 6.5, 18 to 12.0),
+            )))
+        add(layer("bike-lines", "line", source = SRC_BIKE, visibility = bikeVis,
+            layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
+            paint = obj(
+                "line-color" to get("color"),
+                "line-opacity" to 0.9,
+                "line-width" to zoomLinear(9 to 1.6, 13 to 3.6, 18 to 7.0),
+            )))
+
         add(layer("net-tiles-casing", "line", "transportation", visibility = netVis,
             filter = arr("match", get("class"), arr("rail", "transit"), true, false),
             layout = obj("line-join" to "round", "line-cap" to "round"),
@@ -371,22 +408,14 @@ object MapStyle {
                 "circle-stroke-color" to get("color"),
                 "circle-stroke-width" to zoomLinear(12 to 1.2, 16 to 2.2),
             )))
-        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 12.0, visibility = netVis,
+        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 11.5, visibility = netVis,
             filter = arr("!=", get("ref"), ""),
-            layout = obj(
-                "symbol-placement" to "line",
-                "symbol-spacing" to 280,
-                "text-field" to get("ref"),
-                "text-font" to fonts(BOLD),
-                "text-size" to 10.5,
-                "text-keep-upright" to true,
-                "symbol-sort-key" to arr("-", 10, get("rank")),
-            ),
-            paint = obj(
-                "text-color" to "#FFFFFF",
-                "text-halo-color" to get("color"),
-                "text-halo-width" to 3.0,
-            )))
+            layout = linePillLayout(),
+            paint = linePillPaint()))
+        add(layer("bike-labels", "symbol", source = SRC_BIKE, minzoom = 11.0, visibility = bikeVis,
+            filter = arr("!=", get("ref"), ""),
+            layout = linePillLayout(),
+            paint = linePillPaint()))
 
         // Stations: always visible from mid zoom, emphasised when the network is on.
         add(layer("station", "symbol", "poi", minzoom = 12.0,
@@ -531,6 +560,7 @@ object MapStyle {
                 ),
                 SRC_NETWORK to geojson(),
                 SRC_NETWORK_STOPS to geojson(),
+                SRC_BIKE to geojson(),
                 SRC_ROUTE to geojson(),
                 SRC_ROUTE_ALT to geojson(),
                 SRC_ROUTE_STOPS to geojson(),
@@ -663,6 +693,28 @@ object MapStyle {
         "bus_station", "station-bus",
         "ferry_terminal", "station-ferry",
         arr("match", get("class"), "bus", "station-bus", "ferry_terminal", "station-ferry", "station-train"))
+
+    /** Line-number badges drawn along each line, in the line's own colour. */
+    private fun linePillLayout() = obj(
+        "symbol-placement" to "line",
+        "symbol-spacing" to 260,
+        "symbol-sort-key" to arr("-", 10, get("rank")),
+        "text-field" to get("ref"),
+        "text-font" to fonts(BOLD),
+        "text-size" to 11.5,
+        "text-rotation-alignment" to "viewport",
+        "text-pitch-alignment" to "viewport",
+        "icon-image" to "line-pill",
+        "icon-text-fit" to "both",
+        "icon-text-fit-padding" to arr("literal", arr(2, 6, 2, 6)),
+        "icon-rotation-alignment" to "viewport",
+        "icon-pitch-alignment" to "viewport",
+    )
+
+    private fun linePillPaint() = obj(
+        "icon-color" to get("color"),
+        "text-color" to get("text"),
+    )
 
     // ---------- JSON helpers ----------
 

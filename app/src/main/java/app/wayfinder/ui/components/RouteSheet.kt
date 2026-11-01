@@ -26,8 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -58,10 +56,8 @@ fun RouteSheet(
     selected: Int,
     loading: Boolean,
     error: String?,
-    showNetwork: Boolean,
     onSelect: (Int) -> Unit,
     onRetry: () -> Unit,
-    onToggleNetwork: () -> Unit,
 ) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
     Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
@@ -79,21 +75,6 @@ fun RouteSheet(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
             )
-            if (mode == TravelMode.Transit || mode == TravelMode.Train) {
-                FilterChip(
-                    selected = showNetwork,
-                    onClick = onToggleNetwork,
-                    label = { Text("Network") },
-                    leadingIcon = {
-                        Icon(
-                            if (showNetwork) Ph.Filled.Path else Ph.Path,
-                            contentDescription = null,
-                            modifier = Modifier.size(FilterChipDefaults.IconSize),
-                        )
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                )
-            }
         }
 
         when {

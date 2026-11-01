@@ -6,8 +6,8 @@ import app.wayfinder.data.Bounds
 import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
 import app.wayfinder.data.LegMode
-import app.wayfinder.data.NetworkData
-import app.wayfinder.data.TransitNetwork
+import app.wayfinder.data.OverlayData
+import app.wayfinder.data.Overlays
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -20,6 +20,7 @@ import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 
@@ -45,8 +46,11 @@ class MapController(private val context: Context) {
     private var styleKey: String? = null
 
     private var route: RouteDrawing? = null
-    private var network: NetworkData? = null
+    private var transit: OverlayData? = null
+    private var bike: OverlayData? = null
     private var networkVisible = false
+    private var bikeVisible = false
+    private var highlightedLine: String? = null
     private var locationEnabled = false
 
     fun attach(map: MapLibreMap) {
@@ -60,23 +64,21 @@ class MapController(private val context: Context) {
         }
     }
 
-    fun applyStyle(palette: MapPalette, showNetwork: Boolean, onLoaded: () -> Unit = {}) {
+    fun applyStyle(palette: MapPalette, onLoaded: () -> Unit = {}) {
         val map = map ?: return
         this.palette = palette
-        networkVisible = showNetwork
         val key = palette.toString()
-        if (key == styleKey) {
-            setNetworkVisible(showNetwork)
-            return
-        }
+        if (key == styleKey) return
         styleKey = key
         style = null
-        map.setStyle(Style.Builder().fromJson(MapStyle.build(palette, networkVisible))) { loaded ->
+        map.setStyle(Style.Builder().fromJson(MapStyle.build(palette, networkVisible, bikeVisible))) { loaded ->
             style = loaded
             MapIcons.install(context, loaded, palette)
             setNetworkVisible(networkVisible)
+            setBikeVisible(bikeVisible)
             route?.let { drawRoute(it) }
-            network?.let { drawNetwork(it) }
+            drawOverlays()
+            highlightLine(highlightedLine)
             if (locationEnabled) activateLocation(loaded, palette)
             onLoaded()
         }
@@ -151,17 +153,23 @@ class MapController(private val context: Context) {
         }
     }
 
-    // ---------- Network ----------
+    // ---------- Overlays ----------
 
-    fun setNetwork(data: NetworkData?) {
-        network = data
-        drawNetwork(data)
+    fun setTransit(data: OverlayData?) {
+        transit = data
+        drawOverlays()
     }
 
-    private fun drawNetwork(data: NetworkData?) {
+    fun setBike(data: OverlayData?) {
+        bike = data
+        drawOverlays()
+    }
+
+    private fun drawOverlays() {
         val s = style ?: return
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(data?.lines ?: TransitNetwork.EMPTY)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(data?.stops ?: TransitNetwork.EMPTY)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transit?.lines ?: Overlays.EMPTY)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transit?.stops ?: Overlays.EMPTY)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bike?.lines ?: Overlays.EMPTY)
     }
 
     fun setNetworkVisible(show: Boolean) {
@@ -172,6 +180,33 @@ class MapController(private val context: Context) {
         MapStyle.baseRailLayers.forEach {
             s.getLayer(it)?.setProperties(PropertyFactory.lineOpacity(if (show) 0.25f else 1f))
         }
+    }
+
+    fun setBikeVisible(show: Boolean) {
+        bikeVisible = show
+        val s = style ?: return
+        val v = if (show) Property.VISIBLE else Property.NONE
+        MapStyle.bikeLayers.forEach { s.getLayer(it)?.setProperties(PropertyFactory.visibility(v)) }
+    }
+
+    /** Fades every transit line except [key]; null shows all lines again. */
+    fun highlightLine(key: String?) {
+        highlightedLine = key
+        val s = style ?: return
+        val match = Expression.eq(Expression.get("key"), Expression.literal(key ?: ""))
+        val lineOpacity = if (key == null) Expression.literal(1f)
+        else Expression.switchCase(match, Expression.literal(1f), Expression.literal(0.12f))
+        MapStyle.transitLineLayers.forEach { s.getLayer(it)?.setProperties(PropertyFactory.lineOpacity(lineOpacity)) }
+        val labelOpacity = if (key == null) Expression.literal(1f)
+        else Expression.switchCase(match, Expression.literal(1f), Expression.literal(0f))
+        s.getLayer("net-line-labels")?.setProperties(
+            PropertyFactory.iconOpacity(labelOpacity),
+            PropertyFactory.textOpacity(labelOpacity),
+        )
+        s.getLayer("net-stops")?.setProperties(
+            PropertyFactory.circleOpacity(labelOpacity),
+            PropertyFactory.circleStrokeOpacity(labelOpacity),
+        )
     }
 
     // ---------- Route ----------

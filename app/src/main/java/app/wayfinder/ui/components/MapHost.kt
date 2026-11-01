@@ -23,7 +23,6 @@ import org.maplibre.android.maps.MapView
 fun MapHost(
     controller: MapController,
     palette: MapPalette,
-    showNetwork: Boolean,
     compassTopPx: Int,
     attributionBottomPx: Int,
     sidePx: Int,
@@ -38,7 +37,6 @@ fun MapHost(
     val viewport by rememberUpdatedState(onViewport)
     val ready by rememberUpdatedState(onMapReady)
     val currentPalette by rememberUpdatedState(palette)
-    val currentNetwork by rememberUpdatedState(showNetwork)
 
     val mapView = remember {
         MapView(context).apply {
@@ -58,7 +56,7 @@ fun MapHost(
                     longPress(LatLon(latLng.latitude, latLng.longitude))
                     true
                 }
-                controller.applyStyle(currentPalette, currentNetwork) { ready() }
+                controller.applyStyle(currentPalette) { ready() }
             }
         }
     }
@@ -86,7 +84,7 @@ fun MapHost(
 
     // Re-style when the colour scheme changes (light/dark, wallpaper colours).
     androidx.compose.runtime.LaunchedEffect(palette) {
-        controller.applyStyle(palette, showNetwork)
+        controller.applyStyle(palette)
     }
 
     AndroidView(factory = { mapView }, modifier = modifier)

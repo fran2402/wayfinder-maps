@@ -9,12 +9,12 @@ import app.wayfinder.data.Bounds
 import app.wayfinder.data.Geocoder
 import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
-import app.wayfinder.data.NetworkData
-import app.wayfinder.data.NetworkScope
+import app.wayfinder.data.OverlayData
+import app.wayfinder.data.OverlayKind
+import app.wayfinder.data.Overlays
 import app.wayfinder.data.Place
 import app.wayfinder.data.PlaceKind
 import app.wayfinder.data.Router
-import app.wayfinder.data.TransitNetwork
 import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -66,20 +66,31 @@ class WayfinderViewModel : ViewModel() {
     var hasLocationPermission by mutableStateOf(false)
         private set
 
-    // ---------- Network ----------
-    var showNetwork by mutableStateOf(false)
+    // ---------- Map overlays (the pills on top) ----------
+    var showTransit by mutableStateOf(false)
         private set
-    var network by mutableStateOf<NetworkData?>(null)
+    var showBike by mutableStateOf(false)
         private set
-    var networkLoading by mutableStateOf(false)
+    var transit by mutableStateOf<OverlayData?>(null)
         private set
-    var networkHint by mutableStateOf<String?>(null)
+    var bike by mutableStateOf<OverlayData?>(null)
         private set
-    private var networkJob: Job? = null
+    var transitLoading by mutableStateOf(false)
+        private set
+    var bikeLoading by mutableStateOf(false)
+        private set
+    var overlayHint by mutableStateOf<String?>(null)
+        private set
+    /** Key of the line picked in the line pills, or null for all lines. */
+    var highlightedLine by mutableStateOf<String?>(null)
+        private set
+    private var transitJob: Job? = null
+    private var bikeJob: Job? = null
     private var lastViewport: Pair<Bounds, Double>? = null
 
-    val networkScope: NetworkScope
-        get() = if (planning && mode == TravelMode.Train) NetworkScope.Rail else NetworkScope.All
+    /** Train mode narrows the public-transport overlay to rail. */
+    val transitKind: OverlayKind
+        get() = if (planning && mode == TravelMode.Train) OverlayKind.Rail else OverlayKind.Transit
 
     // ---------- Search actions ----------
 
@@ -161,10 +172,10 @@ class WayfinderViewModel : ViewModel() {
 
     fun selectMode(m: TravelMode) {
         if (m == mode) return
-        val scopeBefore = networkScope
+        val kindBefore = transitKind
         mode = m
         plan()
-        if (showNetwork && networkScope != scopeBefore) reloadNetwork(force = true)
+        if (showTransit && transitKind != kindBefore) reloadTransit(force = true)
     }
 
     fun select(index: Int) {
@@ -229,46 +240,95 @@ class WayfinderViewModel : ViewModel() {
         if (first && planning && origin == null && itineraries.isEmpty() && !loading) plan()
     }
 
-    // ---------- Network ----------
+    // ---------- Overlays ----------
 
-    fun toggleNetwork() {
-        showNetwork = !showNetwork
-        if (showNetwork) reloadNetwork(force = false) else {
-            networkJob?.cancel(); networkLoading = false; networkHint = null
+    fun toggleTransit() {
+        showTransit = !showTransit
+        if (showTransit) reloadTransit(force = false) else {
+            transitJob?.cancel(); transitLoading = false; highlightedLine = null
         }
+        updateHint()
+    }
+
+    fun toggleBike() {
+        showBike = !showBike
+        if (showBike) reloadBike(force = false) else {
+            bikeJob?.cancel(); bikeLoading = false
+        }
+        updateHint()
+    }
+
+    fun highlight(key: String?) {
+        highlightedLine = if (highlightedLine == key) null else key
     }
 
     fun onViewport(bounds: Bounds, zoom: Double) {
         lastViewport = bounds to zoom
-        if (showNetwork) reloadNetwork(force = false)
+        if (showTransit) reloadTransit(force = false)
+        if (showBike) reloadBike(force = false)
+        updateHint()
     }
 
-    private fun reloadNetwork(force: Boolean) {
-        val (bounds, zoom) = lastViewport ?: return
-        if (zoom < TransitNetwork.MIN_ZOOM) {
-            networkHint = "Zoom in to see every line"
-            return
+    private fun updateHint(error: String? = null) {
+        val zoom = lastViewport?.second
+        overlayHint = when {
+            error != null -> error
+            !showTransit && !showBike -> null
+            zoom != null && zoom < Overlays.MIN_ZOOM ->
+                if (showTransit) "Zoom in to see every line and its number" else "Zoom in to see bike routes"
+            else -> null
         }
-        networkHint = null
-        val scope = networkScope
-        val includeBus = scope == NetworkScope.All && zoom >= TransitNetwork.BUS_ZOOM
-        val current = network
-        if (!force && current != null && current.scope == scope && current.area.contains(bounds) &&
-            (current.includesBus || !includeBus)
-        ) return
-        networkJob?.cancel()
-        networkJob = viewModelScope.launch {
-            delay(450)
-            networkLoading = true
+    }
+
+    private fun reloadTransit(force: Boolean) {
+        val kind = transitKind
+        transitJob = reload(force, transit, kind, transitJob,
+            setLoading = { transitLoading = it },
+            setData = { data ->
+                if (highlightedLine != null && data.legend.none { it.key == highlightedLine }) highlightedLine = null
+                transit = data
+            },
+            failure = "Couldn't load public transport lines")
+    }
+
+    private fun reloadBike(force: Boolean) {
+        bikeJob = reload(force, bike, OverlayKind.Bike, bikeJob,
+            setLoading = { bikeLoading = it },
+            setData = { bike = it },
+            failure = "Couldn't load bike routes")
+    }
+
+    private fun reload(
+        force: Boolean,
+        current: OverlayData?,
+        kind: OverlayKind,
+        running: Job?,
+        setLoading: (Boolean) -> Unit,
+        setData: (OverlayData) -> Unit,
+        failure: String,
+    ): Job? {
+        val (bounds, zoom) = lastViewport ?: return running
+        if (zoom < Overlays.MIN_ZOOM) return running
+        val detailed = zoom >= Overlays.DETAIL_ZOOM
+        if (!force && current != null && current.kind == kind && current.area.contains(bounds) &&
+            (current.detailed || !detailed)
+        ) return running
+        running?.cancel()
+        var self: Job? = null
+        self = viewModelScope.launch {
+            delay(350)
+            setLoading(true)
             try {
-                network = TransitNetwork.load(bounds.expanded(0.4), scope, includeBus)
+                setData(Overlays.load(kind, bounds.expanded(0.3), detailed))
+                updateHint()
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                networkHint = "Couldn't load the transit network"
+            } catch (e: Exception) {
+                updateHint("$failure (${e.message?.take(60) ?: e.javaClass.simpleName})")
             } finally {
-                if (networkJob === coroutineContext[Job]) networkLoading = false
+                if (coroutineContext[Job] === self) setLoading(false)
             }
         }
+        return self
     }
 }

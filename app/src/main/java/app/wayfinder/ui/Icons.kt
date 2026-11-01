@@ -17,6 +17,7 @@ import com.adamglin.phosphoricons.regular.CaretDown as RCaretDown
 import com.adamglin.phosphoricons.regular.Train as RTrain
 import com.adamglin.phosphoricons.regular.TrainSimple as RTrainSimple
 import com.adamglin.phosphoricons.regular.Bus as RBus
+import com.adamglin.phosphoricons.regular.Bicycle as RBicycle
 import com.adamglin.phosphoricons.regular.Tram as RTram
 import com.adamglin.phosphoricons.regular.Subway as RSubway
 import com.adamglin.phosphoricons.regular.Boat as RBoat
@@ -36,6 +37,7 @@ import com.adamglin.phosphoricons.fill.MapPin as FMapPin
 import com.adamglin.phosphoricons.fill.Train as FTrain
 import com.adamglin.phosphoricons.fill.TrainSimple as FTrainSimple
 import com.adamglin.phosphoricons.fill.Bus as FBus
+import com.adamglin.phosphoricons.fill.Bicycle as FBicycle
 import com.adamglin.phosphoricons.fill.Tram as FTram
 import com.adamglin.phosphoricons.fill.Subway as FSubway
 import com.adamglin.phosphoricons.fill.Boat as FBoat
@@ -75,6 +77,7 @@ object Ph {
     val Train: ImageVector get() = PhosphorIcons.Regular.RTrain
     val TrainSimple: ImageVector get() = PhosphorIcons.Regular.RTrainSimple
     val Bus: ImageVector get() = PhosphorIcons.Regular.RBus
+    val Bicycle: ImageVector get() = PhosphorIcons.Regular.RBicycle
     val Tram: ImageVector get() = PhosphorIcons.Regular.RTram
     val Subway: ImageVector get() = PhosphorIcons.Regular.RSubway
     val Boat: ImageVector get() = PhosphorIcons.Regular.RBoat
@@ -96,6 +99,7 @@ object Ph {
         val Train: ImageVector get() = PhosphorIcons.Fill.FTrain
         val TrainSimple: ImageVector get() = PhosphorIcons.Fill.FTrainSimple
         val Bus: ImageVector get() = PhosphorIcons.Fill.FBus
+        val Bicycle: ImageVector get() = PhosphorIcons.Fill.FBicycle
         val Tram: ImageVector get() = PhosphorIcons.Fill.FTram
         val Subway: ImageVector get() = PhosphorIcons.Fill.FSubway
         val Boat: ImageVector get() = PhosphorIcons.Fill.FBoat

@@ -12,6 +12,8 @@ import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.VectorGroup
 import androidx.compose.ui.graphics.vector.VectorPath
 import app.wayfinder.ui.Ph
+import org.maplibre.android.maps.ImageContent
+import org.maplibre.android.maps.ImageStretches
 import org.maplibre.android.maps.Style
 
 /** Renders Phosphor icons into map sprites (POI badges, station badges, destination pin). */
@@ -52,6 +54,25 @@ object MapIcons {
         }
         images["pin-destination"] = pin(parse(palette.destination), density, dpi)
         style.addImages(images)
+        installLinePill(style, density, dpi)
+    }
+
+    /**
+     * A stretchable rounded rectangle, added as an SDF so the style can tint it per line
+     * (`icon-color`) and size it around the line number (`icon-text-fit`).
+     */
+    private fun installLinePill(style: Style, density: Float, dpi: Int) {
+        val radius = 7f * density
+        val w = (radius * 2 + 4 * density).toInt()
+        val h = (radius * 2 + 4 * density).toInt()
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { this.density = dpi }
+        val c = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.BLACK }
+        c.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), radius, radius, paint)
+        val stretchX = listOf(ImageStretches(radius, w - radius))
+        val stretchY = listOf(ImageStretches(radius, h - radius))
+        val content = ImageContent(radius * 0.6f, radius * 0.4f, w - radius * 0.6f, h - radius * 0.4f)
+        style.addImage("line-pill", bmp, true, stretchX, stretchY, content)
     }
 
     private fun parse(hex: String) = android.graphics.Color.parseColor(hex)
