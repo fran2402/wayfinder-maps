@@ -1,0 +1,11 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.kotlin/
+tools/glyphs/fonts/
+tools/glyphs/cps.json
+tools/glyphs/node_modules/
