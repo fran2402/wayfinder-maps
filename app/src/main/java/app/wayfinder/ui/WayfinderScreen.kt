@@ -241,7 +241,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         onTerrain = vm::setTerrain,
                         onRelief = vm::setRelief,
                         minLineZoom = vm.minLineZoom,
-                        onMinLineZoom = vm::setMinLineZoom,
+                        onMinLineZoom = vm::changeMinLineZoom,
                         presets = app.wayfinder.data.OfflineTransit.presets,
                         saved = vm.savedRegions,
                         download = vm.download,

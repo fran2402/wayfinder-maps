@@ -79,7 +79,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     var minLineZoom by mutableStateOf(prefs.getFloat("minLineZoom", 4f))
         private set
 
-    fun setMinLineZoom(z: Float) {
+    fun changeMinLineZoom(z: Float) {
         minLineZoom = z
         prefs.edit().putFloat("minLineZoom", z).apply()
         ensureTransit()
