@@ -32,6 +32,7 @@ import app.wayfinder.data.TransitRoutes
 import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,8 +86,13 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     fun changeMinLineZoom(z: Float) {
         minLineZoom = z
         prefs.edit().putFloat("minLineZoom", z).apply()
+        linesInZoom = (lastViewport?.second ?: 99.0) >= z
         ensureTransit()
     }
+
+    /** False below [minLineZoom]: every line layer is hidden (a picked line still shows). */
+    var linesInZoom by mutableStateOf(true)
+        private set
 
     // ---------- Offline transit data ----------
     private val offlineStore: OfflineTransit = OfflineTransit(application)
@@ -133,7 +139,11 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             var finishing = false
             fun publish() { download = DownloadState(region, done, units.size, failed, problem, retrying, finishing) }
             suspend fun get(x: Int, y: Int): Boolean = try {
-                offlineStore.downloadUnit(x, y, force = refresh) { problem = it; publish() }
+                coroutineScope {
+                    val lines = async { offlineStore.downloadUnit(x, y, force = refresh) { problem = it; publish() } }
+                    val bikes = async { offlineStore.downloadBike(x, y, force = refresh) { problem = it; publish() } }
+                    lines.await(); bikes.await()
+                }
                 true
             } catch (e: CancellationException) {
                 throw e
@@ -156,7 +166,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                 done = finished.size
                 publish()
                 val missed = ArrayList<Pair<Int, Int>>()
-                runAll(todo, workers = 4) { u, ok ->
+                runAll(todo, workers = 8) { u, ok ->
                     if (!ok) { failed++; missed += u }
                     done++
                     if (ok && done % 4 == 0) problem = null
@@ -167,7 +177,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                     retrying = true
                     publish()
                     delay(10_000)
-                    runAll(missed, workers = 2) { _, ok -> if (ok) { failed--; publish() } }
+                    runAll(missed, workers = 4) { _, ok -> if (ok) { failed--; publish() } }
                 }
                 finishing = true
                 publish()
@@ -301,10 +311,49 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         private set
     /** The picked line with its stops, for the line sheet. */
     val highlightedLoaded: LoadedLine?
-        get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key } }
+        get() = if (highlightedLine == null) null else selectedLine
     /** The picked line's details, for the panel. */
     val highlightedInfo: LineInfo?
-        get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key }?.info }
+        get() = highlightedLoaded?.info
+    /** Snapshot of the picked line, kept whatever the map loads or how far it is zoomed out. */
+    private var selectedLine by mutableStateOf<LoadedLine?>(null)
+    /** The picked line's whole route as GeoJSON, drawn at every zoom. */
+    var selectedGeo by mutableStateOf<String?>(null)
+        private set
+    private var selectionJob: Job? = null
+
+    private fun clearSelection() {
+        highlightedLine = null
+        selectedLine = null
+        selectedGeo = null
+        selectionJob?.cancel()
+    }
+
+    /** Draws what is loaded of [line] at once, then fetches its whole route and frames it. */
+    private fun selectWhole(line: LoadedLine) {
+        val key = line.info.key
+        selectedLine = line
+        val cached = tileCache.values.flatMap { t -> t.routes.filter { it.key == key } }
+        selectedGeo = TransitRoutes.lineGeoJson(key, cached)
+        val ids = cached.flatMap { it.routeIdx.toList() }.distinct().take(8)
+        selectionJob?.cancel()
+        if (ids.isEmpty()) return
+        selectionJob = viewModelScope.launch {
+            val parts = ids.mapNotNull { id ->
+                try { TransitRoutes.loadRouteDetails(id) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+            }.flatMap { it.routes }
+            if (parts.isEmpty() || highlightedLine != key) return@launch
+            val whole = withContext(storeThread) {
+                TransitRoutes.TileBuilder().apply { (cached + parts).forEach { add(it) } }.build().routes
+            }
+            val r = whole.firstOrNull { it.key == key } ?: whole.first()
+            selectedGeo = withContext(storeThread) { TransitRoutes.lineGeoJson(key, whole) }
+            val stops = parts.maxByOrNull { it.stops.size }?.stops.orEmpty()
+            selectedLine = line.copy(bounds = r.bounds, stops = if (stops.size > line.stops.size) stops else line.stops)
+            focusBounds = r.bounds
+            focusRequest++
+        }
+    }
     /** Area the camera should frame after a line is picked; bumped with [focusRequest]. */
     var focusBounds by mutableStateOf<Bounds?>(null)
         private set
@@ -347,6 +396,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     private var departuresJob: Job? = null
     private val bikeStore = RouteStore()
     private val loadedTiles = HashSet<TileId>()
+    /** Download squares whose saved bike routes are in [bikeStore]. */
+    private val loadedBikeUnits = HashSet<Pair<Int, Int>>()
     private val retryAfter = HashMap<Tier, Long>()
     private var overlayError: String? = null
     private var loaderJob: Job? = null
@@ -648,7 +699,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleTransit() {
         showTransit = !showTransit
-        if (!showTransit) highlightedLine = null
+        if (!showTransit) clearSelection()
         overlayError = null
         tileFailedAt.clear()
         ensureTransit()
@@ -678,10 +729,12 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun highlight(key: String?) {
-        highlightedLine = if (highlightedLine == key) null else key
+        if (key == null || highlightedLine == key) { clearSelection(); departures = null; return }
+        highlightedLine = key
         departures = null
-        val picked = highlightedLine ?: return
+        val picked = key
         transitData?.routes?.firstOrNull { it.info.key == picked }?.let { line ->
+            selectWhole(line)
             focusBounds = line.bounds
             focusRequest++
             // Show departures from the stop nearest to the user (or the map centre).
@@ -723,7 +776,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Re-evaluates overlays after the trip or travel mode changed. */
     private fun overlaysChanged() {
-        if (!transitAvailable) highlightedLine = null
+        if (!transitAvailable) clearSelection()
         ensureTransit()
         ensureBike()
         updateHint()
@@ -731,6 +784,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun onViewport(bounds: Bounds, zoom: Double) {
         lastViewport = bounds to zoom
+        linesInZoom = zoom >= minLineZoom
         refreshLegend()
         ensureTransit()
         ensureBike()
@@ -812,7 +866,16 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                 if (next.offline) {
                     // From disk: fast, no throttling, no error banner.
                     val level = offlineStore.levelForZ(next.z)
-                    val data = level?.let { offlineStore.read(it, next.x, next.y) }
+                    val data = level?.let { offlineStore.read(it, next.x, next.y) }?.let { t ->
+                        // Lighter shapes for zoomed-out views: fewer points for the map to tile.
+                        withContext(storeThread) {
+                            when (level) {
+                                OfflineTransit.Level.Rail -> TransitRoutes.reduce(t, 7, 1_500)
+                                OfflineTransit.Level.City -> TransitRoutes.reduce(t, 10, 4_000)
+                                OfflineTransit.Level.Street -> t
+                            }
+                        }
+                    }
                     if (data != null) {
                         tileCache[next] = data
                         if (next in neededTiles) rebuildTransit()
@@ -861,9 +924,11 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             val tiles = keys.mapNotNull { tileCache[it] }
             if (tiles.isEmpty()) return@launch
             shownTiles = keys.filter { it in tileCache }.toSet()
-            val data = withContext(storeThread) { TransitRoutes.merge(tiles) }
+            val zoom = lastViewport?.second ?: 12.0
+            // Stops and line badges only show close in; leave them out further away.
+            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0) }
             transitData = data
-            transitPills = data.routes.map { it.info }
+            transitPills = if (zoom >= 10.5) data.routes.map { it.info } else emptyList()
             transitLines = data.lines
             transitStops = data.stops
             refreshLegend()
@@ -876,10 +941,6 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val routes = transitData?.routes ?: return
         val lines = TransitRoutes.legend(routes, transitModes, view)
         legend = lines
-        if (highlightedLine != null && routes.none { it.info.key == highlightedLine }) {
-            highlightedLine = null
-            departures = null
-        }
         updateHint()
     }
 
@@ -889,21 +950,43 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val (view, zoom) = lastViewport ?: return null
         if (!bikeVisible || zoom < Tier.Bike.minViewZoom) return null
         if ((retryAfter[Tier.Bike] ?: 0L) > System.currentTimeMillis()) return null
-        return Tiles.covering(Tier.Bike, view.expanded(0.1)).filter { it !in loadedTiles }.take(2).ifEmpty { null }
+        return Tiles.covering(Tier.Bike, view.expanded(0.1))
+            .filter { it !in loadedTiles && bikeUnitOf(it) !in loadedBikeUnits }.take(2).ifEmpty { null }
     }
 
     /**
      * Loads missing bike tiles one request at a time. Requests are never cancelled: Overpass keeps
      * running abandoned queries and limits each client's concurrent queries.
      */
+    private fun bikeUnitOf(t: TileId): Pair<Int, Int> {
+        val shift = t.tier.tileZoom - OfflineTransit.Level.City.z
+        return (t.x shr shift) to (t.y shr shift)
+    }
+
     private fun ensureBike() {
         if (loaderJob?.isActive == true) return
         loaderJob = viewModelScope.launch {
             while (true) {
-                if (loadedTiles.size > 40) {
+                if (loadedTiles.size > 40 || loadedBikeUnits.size > 6) {
                     // Keep memory bounded: start over once a lot of area has been cached.
                     withContext(storeThread) { bikeStore.clear() }
                     loadedTiles.clear()
+                    loadedBikeUnits.clear()
+                }
+                // Downloaded squares first: straight from disk, no Overpass.
+                val view = lastViewport
+                if (bikeVisible && view != null && view.second >= Tier.Bike.minViewZoom) {
+                    val units = Tiles.covering(Tier.Bike, view.first.expanded(0.1)).map(::bikeUnitOf).distinct()
+                        .filter { it !in loadedBikeUnits && offlineStore.hasBike(it.first, it.second) }
+                    if (units.isNotEmpty()) {
+                        for (u in units) {
+                            loadedBikeUnits += u
+                            val answers = offlineStore.readBike(u.first, u.second) ?: continue
+                            withContext(storeThread) { answers.forEach { bikeStore.merge(it, bike = true) } }
+                        }
+                        bikeLines = withContext(storeThread) { bikeStore.geoJson(null).first }
+                        continue
+                    }
                 }
                 val tiles = nextBikeBatch() ?: break
                 bikeLoading = true

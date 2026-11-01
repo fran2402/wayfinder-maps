@@ -272,6 +272,15 @@ class MapController(private val context: Context) {
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(stops)
     }
 
+    private var selectedLine: String? = null
+
+    /** The picked line's whole route (null clears it). */
+    fun setSelectedLine(geo: String?) {
+        selectedLine = geo
+        style?.getSourceAs<GeoJsonSource>(MapStyle.SRC_SELECTED)
+            ?.setGeoJson(geo ?: """{"type":"FeatureCollection","features":[]}""")
+    }
+
     fun setBike(lines: String) {
         bikeLines = lines
         style?.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(lines)
@@ -290,6 +299,7 @@ class MapController(private val context: Context) {
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transitLines)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transitStops)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bikeLines)
+        selectedLine?.let { s.getSourceAs<GeoJsonSource>(MapStyle.SRC_SELECTED)?.setGeoJson(it) }
     }
 
     fun setNetworkVisible(show: Boolean) {

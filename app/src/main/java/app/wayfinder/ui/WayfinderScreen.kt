@@ -143,7 +143,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     LaunchedEffect(vm.hasLocationPermission, mapReady) {
         if (vm.hasLocationPermission && mapReady) controller.enableLocation()
     }
-    LaunchedEffect(vm.transitVisible, mapReady) { controller.setNetworkVisible(vm.transitVisible) }
+    LaunchedEffect(vm.transitVisible, vm.linesInZoom, mapReady) { controller.setNetworkVisible(vm.transitVisible && vm.linesInZoom) }
+    LaunchedEffect(vm.selectedGeo, mapReady) { controller.setSelectedLine(vm.selectedGeo) }
     LaunchedEffect(vm.bikeVisible, mapReady) { controller.setBikeVisible(vm.bikeVisible) }
     LaunchedEffect(vm.minLineZoom, mapReady) { controller.setLinesMinZoom(vm.minLineZoom) }
     LaunchedEffect(vm.showFerries, vm.showTerrain, vm.showRelief, mapReady) {

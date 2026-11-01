@@ -98,6 +98,7 @@ object MapStyle {
     const val SRC_NETWORK = "transit"
     const val SRC_NETWORK_STOPS = "transit-stops"
     const val SRC_BIKE = "bike"
+    const val SRC_SELECTED = "selected-line"
 
     /** Layers shown only while the public-transport overlay is switched on. */
     val networkLayers = listOf(
@@ -373,6 +374,14 @@ object MapStyle {
                 "line-width" to zoomLinear(9 to 2.5, 13 to 4.5, 18 to 7.0),
                 "line-dasharray" to arr("literal", arr(0.01, 2.0)),
             )))
+
+        // The picked line, whole, at every zoom (not tied to the "show lines from" setting).
+        add(layer("sel-casing", "line", source = SRC_SELECTED,
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj("line-color" to p.surface, "line-width" to zoomExp(1.3, 3 to 4.0, 9 to 6.0, 13 to 9.0, 18 to 14.0))))
+        add(layer("sel-line", "line", source = SRC_SELECTED,
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj("line-color" to get("color"), "line-width" to zoomExp(1.3, 3 to 2.2, 9 to 3.4, 13 to 5.6, 18 to 9.0))))
 
         // ---------- Route ----------
         add(layer("route-alt", "line", source = SRC_ROUTE_ALT,
@@ -700,8 +709,11 @@ object MapStyle {
                 ),
                 // Overlay sources are big: tile them only up to z14 (MapLibre over-zooms beyond),
                 // which makes updates far cheaper.
-                SRC_NETWORK to geojson(maxzoom = 14),
+                // Lines: tiled to z12 only (over-zoomed beyond) with a coarser tolerance, which
+                // cuts the work on every update several-fold.
+                SRC_NETWORK to geojson(maxzoom = 12, tolerance = 0.9),
                 SRC_NETWORK_STOPS to geojson(maxzoom = 14),
+                SRC_SELECTED to geojson(maxzoom = 12),
                 SRC_BIKE to geojson(maxzoom = 14),
                 SRC_ROUTE to geojson(),
                 SRC_ROUTE_ALT to geojson(),
@@ -896,11 +908,11 @@ object MapStyle {
         "text-halo-blur" to 0.5,
     )
 
-    private fun geojson(maxzoom: Int? = null) = obj(
+    private fun geojson(maxzoom: Int? = null, tolerance: Double = 0.5) = obj(
         "type" to "geojson",
         "data" to obj("type" to "FeatureCollection", "features" to JSONArray()),
         "maxzoom" to maxzoom,
-        "tolerance" to if (maxzoom != null) 0.5 else null,
+        "tolerance" to if (maxzoom != null) tolerance else null,
         "buffer" to if (maxzoom != null) 32 else null,
     )
 

@@ -36,6 +36,8 @@ class TileRoute(
     val partIds: IntArray,
     val stops: List<StopRef>,
     val bounds: Bounds,
+    /** Transitous route indexes behind this line, for fetching the whole route. */
+    val routeIdx: IntArray = IntArray(0),
 )
 
 /** Everything one tile request returned. */
@@ -111,6 +113,7 @@ object TransitRoutes {
         val segments: IntArray,
         /** "NONE" means the server has no real shape and joins stops with straight lines. */
         val pathSource: String,
+        val routeIdx: Int,
     )
 
     private class Raw {
@@ -150,11 +153,13 @@ object TransitRoutes {
             var text: Int? = null
             var segments = IntArray(0)
             var pathSource = ""
+            var routeIdx = -1
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
                     "mode" -> mode = r.nextStringOrEmpty()
                     "pathSource" -> pathSource = r.nextStringOrEmpty()
+                    "routeIdx" -> routeIdx = if (r.peek() == JsonToken.NUMBER) r.nextInt() else { r.skipValue(); -1 }
                     "transitRoutes" -> {
                         r.beginArray()
                         while (r.hasNext()) {
@@ -198,7 +203,7 @@ object TransitRoutes {
                 }
             }
             r.endObject()
-            raw.routes += RawRoute(mode, ref, name, color, text, segments, pathSource)
+            raw.routes += RawRoute(mode, ref, name, color, text, segments, pathSource, routeIdx)
         }
         r.endArray()
     }
@@ -294,8 +299,18 @@ object TransitRoutes {
                 raw.stops.getOrNull(to)?.let { if (stops.lastOrNull()?.id != it.id) stops += it }
                 val pts = raw.polylines.getOrNull(pi) ?: continue
                 if (pts.size < 4 || !used.add(pi)) continue
-                parts += pts
-                ids += pts.contentHashCode()
+                // A shape far longer than the stop-to-stop distance is a routing glitch (the
+                // "fans" of lines that all detour to one wrong point): leave it out.
+                val a = raw.stops.getOrNull(from); val b = raw.stops.getOrNull(to)
+                if (a != null && b != null && mode != TransitMode.Ferry) {
+                    val direct = metres(a.lat.toFloat(), a.lon.toFloat(), b.lat.toFloat(), b.lon.toFloat())
+                    val path = pathLength(pts)
+                    if (path > 1500 && path > direct * 3 + 600) continue
+                }
+                for (piece in cutLongEdges(pts, mode, 0.0)) {
+                    parts += piece
+                    ids += piece.contentHashCode()
+                }
                 var k = 0
                 while (k < pts.size) {
                     val lat = pts[k]; val lon = pts[k + 1]
@@ -309,6 +324,7 @@ object TransitRoutes {
                 color = color, text = text, rank = Palette.rank(osmRoute, ""),
                 parts = parts, partIds = ids.toIntArray(), stops = stops,
                 bounds = Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()),
+                routeIdx = if (route.routeIdx >= 0) intArrayOf(route.routeIdx) else IntArray(0),
             )
         }
         return TileData(out, raw.zoomFiltered || raw.routes.size > maxRoutes)
@@ -325,6 +341,7 @@ object TransitRoutes {
             val ids = ArrayList<Int>()
             val seen = HashSet<Int>()
             var stops: List<StopRef> = first.stops
+            val routeIdx = LinkedHashSet<Int>()
             var s = first.bounds.south; var w = first.bounds.west; var n = first.bounds.north; var e = first.bounds.east
         }
         private val byKey = LinkedHashMap<String, Acc>()
@@ -338,6 +355,7 @@ object TransitRoutes {
                 if (acc.seen.add(r.partIds[k])) { acc.parts += part; acc.ids += r.partIds[k] }
             }
             if (r.stops.size > acc.stops.size) acc.stops = r.stops
+            r.routeIdx.forEach { acc.routeIdx += it }
             acc.s = minOf(acc.s, r.bounds.south); acc.w = minOf(acc.w, r.bounds.west)
             acc.n = maxOf(acc.n, r.bounds.north); acc.e = maxOf(acc.e, r.bounds.east)
         }
@@ -350,7 +368,7 @@ object TransitRoutes {
         fun build(): TileData = TileData(byKey.values.map { a ->
             val r = a.first
             TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank,
-                a.parts, a.ids.toIntArray(), a.stops, Bounds(a.s, a.w, a.n, a.e))
+                a.parts, a.ids.toIntArray(), a.stops, Bounds(a.s, a.w, a.n, a.e), a.routeIdx.toIntArray())
         }, zoomFiltered)
     }
 
@@ -405,6 +423,93 @@ object TransitRoutes {
         return TileData(kept, t.zoomFiltered || kept.size < out.size)
     }
 
+    /**
+     * Splits a shape wherever one straight edge is implausibly long for its mode: such edges
+     * are stop-to-stop jumps from missing or broken shapes, not track. [toleranceM] is how much
+     * the shape was simplified (simplifying legitimately makes edges longer).
+     */
+    fun cutLongEdges(pts: FloatArray, mode: TransitMode, toleranceM: Double): List<FloatArray> {
+        val base = when (mode) {
+            TransitMode.Bus -> 1_500.0
+            TransitMode.Tram -> 1_200.0
+            TransitMode.Metro -> 3_000.0
+            TransitMode.Other -> 2_500.0
+            TransitMode.Train -> 20_000.0
+            TransitMode.Ferry -> return listOf(pts)
+        }
+        val limit = maxOf(base, toleranceM * 25)
+        var out: ArrayList<FloatArray>? = null
+        var start = 0
+        var k = 0
+        while (k + 3 < pts.size) {
+            if (metres(pts[k], pts[k + 1], pts[k + 2], pts[k + 3]) > limit) {
+                if (out == null) out = ArrayList()
+                if (k + 2 - start >= 4) out += pts.copyOfRange(start, k + 2)
+                start = k + 2
+            }
+            k += 2
+        }
+        if (out == null) return listOf(pts)
+        if (pts.size - start >= 4) out += pts.copyOfRange(start, pts.size)
+        return out
+    }
+
+    /** [cutLongEdges] for a whole tile (also cleans data stored by older versions). */
+    fun clean(t: TileData, toleranceM: Double): TileData = TileData(t.routes.mapNotNull { r ->
+        val parts = r.parts.flatMap { cutLongEdges(it, r.mode, toleranceM) }
+        when {
+            parts.isEmpty() -> null
+            parts.size == r.parts.size -> r
+            else -> withParts(r, parts)
+        }
+    }, t.zoomFiltered)
+
+    private fun pathLength(pts: FloatArray): Double {
+        var sum = 0.0
+        var k = 0
+        while (k + 3 < pts.size) { sum += metres(pts[k], pts[k + 1], pts[k + 2], pts[k + 3]); k += 2 }
+        return sum
+    }
+
+    private const val DETAILS_URL = "https://api.transitous.org/api/experimental/map/route-details"
+
+    /** The whole of one Transitous route (every stop and shape), whatever the map shows. */
+    suspend fun loadRouteDetails(routeIdx: Int): TileData {
+        val url = DETAILS_URL.toHttpUrl().newBuilder().addQueryParameter("routeIdx", routeIdx.toString()).build()
+        return withContext(Dispatchers.IO) {
+            val call = client.newCall(Request.Builder().url(url).build())
+            val handle = coroutineContext[Job]?.invokeOnCompletion { if (it != null) call.cancel() }
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) throw HttpException(response.code, "HTTP ${response.code}")
+                    parse(response.body!!.charStream(), 15.0, includeBus = true, maxRoutes = Int.MAX_VALUE)
+                }
+            } finally {
+                handle?.dispose()
+            }
+        }
+    }
+
+    /** GeoJSON for one picked line, drawn on its own layer at every zoom. */
+    fun lineGeoJson(key: String, routes: List<TileRoute>): String {
+        val sb = StringBuilder("""{"type":"FeatureCollection","features":[""")
+        var first = true
+        for (r in routes) for (pts in r.parts) {
+            if (!first) sb.append(',')
+            first = false
+            sb.append("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[""")
+            var k = 0
+            while (k < pts.size) {
+                if (k > 0) sb.append(',')
+                sb.append('[').appendCoord(pts[k + 1]).append(',').appendCoord(pts[k]).append(']')
+                k += 2
+            }
+            sb.append("""]},"properties":{"key":""").append(quote(key))
+                .append(""","mode":"${r.mode.name}","color":"${Palette.hex(r.color)}"}}""")
+        }
+        return sb.append("]}").toString()
+    }
+
     private fun withParts(r: TileRoute, parts: List<FloatArray>): TileRoute {
         var s = 90f; var n = -90f; var w = 180f; var e = -180f
         for (p in parts) {
@@ -417,10 +522,10 @@ object TransitRoutes {
         }
         return TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank,
             parts, IntArray(parts.size) { parts[it].contentHashCode() }, r.stops,
-            Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()))
+            Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()), r.routeIdx)
     }
 
-    fun merge(tiles: Collection<TileData>): TransitData {
+    fun merge(tiles: Collection<TileData>, withStops: Boolean = true): TransitData {
         class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()
             val ids = HashSet<Int>()
@@ -467,7 +572,7 @@ object TransitRoutes {
             if (r.ref.isNotBlank()) lines.append(""","pill":"${pillId(key)}"""")
             lines.append("}}")
 
-            for (st in acc.stops) {
+            if (withStops) for (st in acc.stops) {
                 val id = st.id.ifBlank { "${st.lat},${st.lon}" }
                 val prev = stopFeatures[id]
                 if (prev == null || prev.first < r.rank) {

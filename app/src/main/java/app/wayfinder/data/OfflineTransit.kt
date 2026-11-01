@@ -49,7 +49,7 @@ class OfflineTransit(context: Context) {
     init {
         // Data from older versions used other levels and left buses out: start afresh.
         val marker = File(dir, "format")
-        if (runCatching { marker.readText().trim() }.getOrNull() != VERSION.toString()) {
+        if (runCatching { marker.readText().trim() }.getOrNull() !in setOf("2", VERSION.toString())) {
             dir.listFiles()?.forEach { it.delete() }
             marker.writeText(VERSION.toString())
         }
@@ -102,7 +102,7 @@ class OfflineTransit(context: Context) {
             area = view,
         )
 
-        private const val VERSION = 2
+        private const val VERSION = 3
 
         /** Server zoom for downloads: Transitous includes every mode from zoom 11 up. */
         private const val SERVER_ZOOM = 14
@@ -111,7 +111,7 @@ class OfflineTransit(context: Context) {
         private const val MAX_SPLITS = 6
 
         /** Requests in flight at once, across the whole download. */
-        private const val PARALLEL = 4
+        private const val PARALLEL = 8
     }
 
     // ---------- Tiles ----------
@@ -143,7 +143,7 @@ class OfflineTransit(context: Context) {
 
     /** Names of tile files on disk, so lookups never touch the file system. */
     private val present: MutableSet<String> = java.util.Collections.synchronizedSet(
-        HashSet(dir.list()?.filter { it.endsWith(".bin") }.orEmpty())
+        HashSet(dir.list()?.filter { it.endsWith(".bin") || it.endsWith(".json.gz") }.orEmpty())
     )
 
     fun has(level: Level, x: Int, y: Int) = name(level, x, y) in present
@@ -154,7 +154,9 @@ class OfflineTransit(context: Context) {
         val f = file(level, x, y)
         if (!f.exists()) return@withContext null
         runCatching {
-            DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream()), 1 shl 16)).use { decode(it) }
+            val t = DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream()), 1 shl 16)).use { decode(it) }
+            // Drops stop-to-stop jumps, including in data saved before that was filtered at download.
+            TransitRoutes.clean(t, toleranceMetres(level.detailZoom))
         }.getOrNull()
     }
 
@@ -163,6 +165,56 @@ class OfflineTransit(context: Context) {
         DataOutputStream(BufferedOutputStream(GZIPOutputStream(tmp.outputStream()), 1 shl 16)).use { encode(data, it) }
         tmp.renameTo(file(level, x, y))
         present += name(level, x, y)
+    }
+
+    private fun toleranceMetres(zoom: Int) = 40_075_000.0 / (256.0 * Math.pow(2.0, zoom.toDouble())) / 3.0
+
+    // ---------- Bike routes ----------
+
+    private fun bikeName(x: Int, y: Int) = "bike_${Level.City.z}_${x}_$y.json"
+    private fun bikeFile(x: Int, y: Int) = File(dir, "${bikeName(x, y)}.gz")
+
+    fun hasBike(x: Int, y: Int) = "${bikeName(x, y)}.gz" in present
+
+    /** Saved Overpass answers (one per piece) for a download square, or null if not downloaded. */
+    suspend fun readBike(x: Int, y: Int): List<JSONObject>? = withContext(Dispatchers.IO) {
+        if (!hasBike(x, y)) return@withContext null
+        runCatching {
+            val arr = JSONArray(GZIPInputStream(bikeFile(x, y).inputStream()).bufferedReader().use { it.readText() })
+            List(arr.length()) { arr.getJSONObject(it) }
+        }.getOrNull()
+    }
+
+    private val bikeGate = Semaphore(2) // Overpass allows few parallel queries per client
+
+    /** Downloads the bike routes of one square, splitting it when Overpass gives up on it. */
+    suspend fun downloadBike(x: Int, y: Int, force: Boolean = false, onProblem: (String) -> Unit) {
+        if (!force && hasBike(x, y)) return
+        val answers = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+        suspend fun get(area: Bounds, depth: Int) {
+            var tries = 0
+            while (true) {
+                val res = bikeGate.withPermit { runCatching { Overpass.fetchLarge(Tier.Bike, area) } }
+                val e = res.exceptionOrNull()
+                if (e == null) { answers += res.getOrThrow(); return }
+                if (e is CancellationException) throw e
+                onProblem("bike routes: " + (e.message?.take(40) ?: "failed"))
+                if (depth < 3) {
+                    coroutineScope { quarters(area).map { q -> async { get(q, depth + 1) } }.awaitAll() }
+                    return
+                }
+                tries++
+                if (tries >= 3) throw e
+                delay(5_000L * tries)
+            }
+        }
+        get(Tiles.bounds(Level.City.z, x, y), 0)
+        withContext(Dispatchers.IO) {
+            val tmp = File(dir, "${bikeName(x, y)}.tmp")
+            GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { it.write(JSONArray(answers).toString()) }
+            tmp.renameTo(bikeFile(x, y))
+            present += "${bikeName(x, y)}.gz"
+        }
     }
 
     // ---------- Downloading ----------
@@ -178,14 +230,14 @@ class OfflineTransit(context: Context) {
      */
     @Volatile private var learnedDepth = 0
 
-    fun isUnitDone(x: Int, y: Int) = has(Level.City, x, y)
+    fun isUnitDone(x: Int, y: Int) = has(Level.City, x, y) && hasBike(x, y)
 
     /**
      * Downloads one unit at full detail: its Street tiles, then its City tile. Requests for the
      * parts of a unit run in parallel (at most [PARALLEL] across the whole download).
      */
     suspend fun downloadUnit(x: Int, y: Int, force: Boolean = false, onProblem: (String) -> Unit) {
-        if (!force && isUnitDone(x, y)) return
+        if (!force && has(Level.City, x, y)) return
         val unit = Tiles.bounds(Level.City.z, x, y)
         val k = 1 shl (Level.Street.z - Level.City.z)
         val childBounds = List(k * k) { Tiles.bounds(Level.Street.z, x * k + it % k, y * k + it / k) }
@@ -342,13 +394,17 @@ class OfflineTransit(context: Context) {
         tilesOf(target.region).filter { it !in keep }.forEach { (l, x, y) ->
             file(l, x, y).delete()
             present -= name(l, x, y)
+            if (l == Level.City) { bikeFile(x, y).delete(); present -= "${bikeName(x, y)}.gz" }
         }
         index.writeText(JSONArray().toString())
         all.filter { it.region.id != id }.forEach { record(it) }
     }
 
     suspend fun bytesOf(region: Region): Long = withContext(Dispatchers.IO) {
-        tilesOf(region).sumOf { (l, x, y) -> if (has(l, x, y)) file(l, x, y).length() else 0L }
+        tilesOf(region).sumOf { (l, x, y) ->
+            (if (has(l, x, y)) file(l, x, y).length() else 0L) +
+                (if (l == Level.City && hasBike(x, y)) bikeFile(x, y).length() else 0L)
+        }
     }
 
     // ---------- Encoding ----------
@@ -371,11 +427,14 @@ class OfflineTransit(context: Context) {
             }
             out.writeInt(r.stops.size)
             r.stops.forEach { s -> out.writeUTF(s.id); out.writeUTF(s.name.take(200)); out.writeDouble(s.lat); out.writeDouble(s.lon) }
+            out.writeInt(r.routeIdx.size)
+            r.routeIdx.forEach(out::writeInt)
         }
     }
 
     private fun decode(inp: DataInputStream): TileData {
-        require(inp.readInt() == VERSION)
+        val version = inp.readInt()
+        require(version == 2 || version == VERSION)
         val zoomFiltered = inp.readBoolean()
         val n = inp.readInt()
         val routes = ArrayList<TileRoute>(n)
@@ -394,7 +453,8 @@ class OfflineTransit(context: Context) {
             }
             val sc = inp.readInt()
             val stops = List(sc) { StopRef(inp.readUTF(), inp.readUTF(), inp.readDouble(), inp.readDouble()) }
-            routes += TileRoute(key, mode, osmRoute, ref, name, color, text, rank, parts, ids, stops, bounds)
+            val routeIdx = if (version >= 3) IntArray(inp.readInt()) { inp.readInt() } else IntArray(0)
+            routes += TileRoute(key, mode, osmRoute, ref, name, color, text, rank, parts, ids, stops, bounds, routeIdx)
         }
         return TileData(routes, zoomFiltered)
     }

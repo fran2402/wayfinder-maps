@@ -270,12 +270,37 @@ object Overpass {
         throw last ?: IOException("Overpass unavailable")
     }
 
-    private suspend fun post(url: String, query: String): String = withContext(Dispatchers.IO) {
+    private val largeClient = Http.client.newBuilder()
+        .callTimeout(150, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    /** For downloads: a bigger area and a longer server time limit; one endpoint after another. */
+    suspend fun fetchLarge(tier: Tier, area: Bounds): JSONObject {
+        val bbox = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", area.south, area.west, area.north, area.east)
+        val query = "[out:json][timeout:120];\n" +
+            "relation[\"type\"=\"route\"][\"route\"~\"^(${tier.routes})$\"]($bbox)->.r;\n" +
+            ".r out body;\nway(r.r)($bbox);\nout geom;\n"
+        var last: Exception? = null
+        for (endpoint in endpoints) {
+            try {
+                val body = post(endpoint, query, largeClient)
+                return withContext(Dispatchers.Default) { JSONObject(body) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: IOException("Overpass unavailable")
+    }
+
+    private suspend fun post(url: String, query: String, http: okhttp3.OkHttpClient = client): String = withContext(Dispatchers.IO) {
         suspendCancellableCoroutine { cont ->
             val request = Request.Builder().url(url)
                 .post(FormBody.Builder().add("data", query).build())
                 .build()
-            val call = client.newCall(request)
+            val call = http.newCall(request)
             cont.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
