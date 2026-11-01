@@ -68,6 +68,7 @@ import com.adamglin.phosphoricons.fill.Path as FPath
 import com.adamglin.phosphoricons.fill.GpsFix as FGpsFix
 import com.adamglin.phosphoricons.fill.FlagCheckered as FFlagCheckered
 import com.adamglin.phosphoricons.bold.X as BX
+import com.adamglin.phosphoricons.bold.Plus as BPlus
 import com.adamglin.phosphoricons.bold.ArrowLeft as BArrowLeft
 
 /** Phosphor icons used across the app (https://phosphoricons.com). */
@@ -139,6 +140,7 @@ object Ph {
     }
 
     object Strong {
+        val Plus: ImageVector get() = PhosphorIcons.Bold.BPlus
         val X: ImageVector get() = PhosphorIcons.Bold.BX
         val ArrowLeft: ImageVector get() = PhosphorIcons.Bold.BArrowLeft
     }

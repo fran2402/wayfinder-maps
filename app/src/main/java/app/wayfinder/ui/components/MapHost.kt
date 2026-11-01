@@ -28,12 +28,14 @@ fun MapHost(
     sidePx: Int,
     onMapReady: () -> Unit,
     onLongPress: (LatLon) -> Unit,
+    onTap: (LatLon) -> Unit,
     onViewport: (Bounds, Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val longPress by rememberUpdatedState(onLongPress)
+    val tap by rememberUpdatedState(onTap)
     val viewport by rememberUpdatedState(onViewport)
     val ready by rememberUpdatedState(onMapReady)
     val currentPalette by rememberUpdatedState(palette)
@@ -51,6 +53,10 @@ fun MapHost(
                 }
                 map.addOnCameraIdleListener {
                     controller.visibleBounds()?.let { viewport(it, controller.zoom()) }
+                }
+                map.addOnMapClickListener { latLng ->
+                    tap(LatLon(latLng.latitude, latLng.longitude))
+                    false
                 }
                 map.addOnMapLongClickListener { latLng ->
                     longPress(LatLon(latLng.latitude, latLng.longitude))

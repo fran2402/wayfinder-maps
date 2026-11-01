@@ -32,7 +32,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.IOException
 
-enum class SearchTarget { From, To }
+enum class SearchTarget { From, To, Stop }
+
+/** One leg of a multi-stop trip, planned with its own travel mode. */
+data class TripSegment(
+    val from: Place?, // null = my location
+    val to: Place,
+    val mode: TravelMode,
+    val options: List<Itinerary> = emptyList(),
+    val selected: Int = 0,
+    val loading: Boolean = false,
+    val error: String? = null,
+) {
+    val chosen: Itinerary? get() = options.getOrNull(selected)
+}
+
+/** A place the user tapped on the map (restaurant, shop, station…). */
+data class PlaceDetail(val place: Place, val category: String?, val poiClass: String?)
 
 class WayfinderViewModel : ViewModel() {
 
@@ -69,6 +85,38 @@ class WayfinderViewModel : ViewModel() {
     private var planJob: Job? = null
 
     val planning: Boolean get() = destination != null
+
+    // ---------- Stops in between ----------
+    /** Places visited between the start and the destination, in order. */
+    var stops by mutableStateOf<List<Place>>(emptyList())
+        private set
+    /** Travel mode per segment (stops.size + 1 entries) while the trip has stops. */
+    var segmentModes by mutableStateOf<List<TravelMode>>(emptyList())
+        private set
+    var segments by mutableStateOf<List<TripSegment>>(emptyList())
+        private set
+    val multiStop: Boolean get() = stops.isNotEmpty()
+
+    /** The chosen option of every segment, stitched into one trip. */
+    val combined: Itinerary?
+        get() {
+            val chosen = segments.map { it.chosen ?: return null }
+            if (chosen.isEmpty()) return null
+            val start = chosen.first().startMs
+            val end = chosen.last().endMs
+            return Itinerary(
+                legs = chosen.flatMap { it.legs },
+                durationS = if (start != null && end != null) (end - start) / 1000 else chosen.sumOf { it.durationS },
+                startMs = start,
+                endMs = end,
+                transfers = chosen.sumOf { it.transfers },
+                distanceM = chosen.mapNotNull { it.distanceM }.takeIf { it.size == chosen.size }?.sum(),
+            )
+        }
+
+    // ---------- Tapped place ----------
+    var tappedPlace by mutableStateOf<PlaceDetail?>(null)
+        private set
 
     // ---------- Location ----------
     var myLocation by mutableStateOf<LatLon?>(null)
@@ -186,6 +234,11 @@ class WayfinderViewModel : ViewModel() {
         when (searchTarget) {
             SearchTarget.From -> origin = place?.takeUnless { it.kind == PlaceKind.MyLocation }
             SearchTarget.To, null -> destination = place
+            SearchTarget.Stop -> if (place != null) {
+                closeSearch()
+                addStop(place)
+                return
+            }
         }
         closeSearch()
         plan()
@@ -210,6 +263,8 @@ class WayfinderViewModel : ViewModel() {
         val to = destination ?: return
         origin = to
         destination = from
+        stops = stops.reversed()
+        segmentModes = segmentModes.reversed()
         if (destination?.kind == PlaceKind.MyLocation) {
             // Keep "my location" live on the destination side as a fixed point.
             destination = destination?.copy(name = "Your location")
@@ -221,6 +276,9 @@ class WayfinderViewModel : ViewModel() {
         planJob?.cancel()
         destination = null
         origin = null
+        stops = emptyList()
+        segmentModes = emptyList()
+        segments = emptyList()
         itineraries = emptyList()
         error = null
         loading = false
@@ -228,11 +286,89 @@ class WayfinderViewModel : ViewModel() {
         overlaysChanged()
     }
 
+    /** Sets the travel mode; with stops, it applies to every segment. */
     fun selectMode(m: TravelMode) {
-        if (m == mode) return
+        if (m == mode && (!multiStop || segmentModes.all { it == m })) return
         mode = m
+        if (multiStop) segmentModes = List(stops.size + 1) { m }
         plan()
         overlaysChanged()
+    }
+
+    // ---------- Stops ----------
+
+    /** Adds a stop just before the destination; the new segment inherits the last one's mode. */
+    fun addStop(place: Place) {
+        if (destination == null) return
+        val modes = segmentModes.takeIf { it.size == stops.size + 1 } ?: List(stops.size + 1) { mode }
+        stops = stops + place
+        segmentModes = modes + modes.last()
+        segments = emptyList()
+        plan()
+        overlaysChanged()
+    }
+
+    fun removeStop(index: Int) {
+        if (index !in stops.indices) return
+        val modes = segmentModes.toMutableList()
+        if (index + 1 < modes.size) modes.removeAt(index + 1)
+        stops = stops.filterIndexed { i, _ -> i != index }
+        segmentModes = if (stops.isEmpty()) emptyList() else modes
+        if (stops.isEmpty()) {
+            mode = modes.firstOrNull() ?: mode
+            segments = emptyList()
+        }
+        plan()
+        overlaysChanged()
+    }
+
+    /** Changes the travel mode of one segment and re-plans from there on. */
+    fun setSegmentMode(index: Int, m: TravelMode) {
+        if (index !in segmentModes.indices || segmentModes[index] == m) return
+        segmentModes = segmentModes.toMutableList().also { it[index] = m }
+        planSegments(index)
+    }
+
+    /** Picks another option for one segment; later segments are re-timed. */
+    fun selectSegmentOption(index: Int, option: Int) {
+        val seg = segments.getOrNull(index) ?: return
+        if (seg.selected == option || option !in seg.options.indices) return
+        segments = segments.toMutableList().also { it[index] = seg.copy(selected = option) }
+        if (index < segments.lastIndex) planSegments(index + 1) else fitRequest++
+    }
+
+    // ---------- Tapped places ----------
+
+    fun onPlaceTapped(place: Place, category: String?, poiClass: String?) {
+        val detail = PlaceDetail(place, category, poiClass)
+        tappedPlace = detail
+        if (place.detail == null) {
+            viewModelScope.launch {
+                val found = runCatching { Geocoder.reverse(place.pos) }.getOrNull() ?: return@launch
+                val address = listOfNotNull(found.name.takeIf { it != place.name }, found.detail)
+                    .joinToString(", ").ifBlank { null }
+                if (tappedPlace == detail) tappedPlace = detail.copy(place = place.copy(detail = address))
+            }
+        }
+    }
+
+    fun closePlace() { tappedPlace = null }
+
+    fun directionsTo(place: Place) {
+        tappedPlace = null
+        showKey = false
+        stops = emptyList()
+        segmentModes = emptyList()
+        segments = emptyList()
+        origin = null
+        destination = place
+        plan()
+        overlaysChanged()
+    }
+
+    fun addStopFromPlace(place: Place) {
+        tappedPlace = null
+        addStop(place)
     }
 
     fun select(index: Int) {
@@ -244,6 +380,10 @@ class WayfinderViewModel : ViewModel() {
     // ---------- Planning ----------
 
     fun plan() {
+        if (multiStop) {
+            planSegments(0)
+            return
+        }
         val to = destination ?: return
         val from = origin?.pos ?: myLocation
         planJob?.cancel()
@@ -271,6 +411,52 @@ class WayfinderViewModel : ViewModel() {
                 error = "Can't reach the routing service. Check your connection."
             } catch (e: Exception) {
                 error = noResultsMessage(requestMode)
+            } finally {
+                if (planJob === coroutineContext[Job]) loading = false
+            }
+        }
+    }
+
+    /** Plans segments [start]..end in order; each departs when the previous one arrives. */
+    private fun planSegments(start: Int) {
+        val to = destination ?: return
+        val startPos = origin?.pos ?: myLocation
+        planJob?.cancel()
+        if (startPos == null) {
+            loading = false
+            error = if (hasLocationPermission) "Waiting for your location…" else "Choose a starting point or turn on location"
+            fitRequest++
+            return
+        }
+        val points: List<Place?> = listOf(origin) + stops + listOf(to)
+        val count = points.size - 1
+        if (segmentModes.size != count) segmentModes = List(count) { segmentModes.getOrNull(it) ?: mode }
+        val kept = segments.take(start).takeIf { it.size == start } ?: emptyList()
+        val from = kept.size
+        segments = kept + (from until count).map { TripSegment(points[it], points[it + 1]!!, segmentModes[it], loading = true) }
+        error = null
+        loading = true
+        planJob = viewModelScope.launch {
+            try {
+                var departAt = kept.lastOrNull()?.chosen?.endMs
+                for (i in from until count) {
+                    val seg = segments[i]
+                    val origin = points[i]?.pos ?: startPos
+                    val updated = try {
+                        val result = Router.plan(seg.mode, origin, seg.to.pos, departAt)
+                        seg.copy(options = result, selected = 0, loading = false,
+                            error = if (result.isEmpty()) noResultsMessage(seg.mode) else null)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: IOException) {
+                        seg.copy(loading = false, error = "Can't reach the routing service")
+                    } catch (e: Exception) {
+                        seg.copy(loading = false, error = noResultsMessage(seg.mode))
+                    }
+                    segments = segments.toMutableList().also { it[i] = updated }
+                    departAt = updated.chosen?.endMs ?: departAt
+                }
+                fitRequest++
             } finally {
                 if (planJob === coroutineContext[Job]) loading = false
             }

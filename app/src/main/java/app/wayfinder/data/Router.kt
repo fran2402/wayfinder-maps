@@ -8,17 +8,18 @@ import java.time.OffsetDateTime
 
 object Router {
 
-    suspend fun plan(mode: TravelMode, from: LatLon, to: LatLon): List<Itinerary> = when (mode) {
-        TravelMode.Walk -> Osrm.route("routed-foot", LegMode.Walk, from, to)
-        TravelMode.Cycle -> Osrm.route("routed-bike", LegMode.Bike, from, to)
-        TravelMode.Transit -> Motis.plan(from, to, listOf("TRANSIT"))
-        TravelMode.Train -> Motis.plan(from, to, listOf("RAIL,SUBURBAN", "RAIL"))
+    /** [departAt] (epoch ms) chains legs of a multi-stop trip; null means now. */
+    suspend fun plan(mode: TravelMode, from: LatLon, to: LatLon, departAt: Long? = null): List<Itinerary> = when (mode) {
+        TravelMode.Walk -> Osrm.route("routed-foot", LegMode.Walk, from, to, departAt)
+        TravelMode.Cycle -> Osrm.route("routed-bike", LegMode.Bike, from, to, departAt)
+        TravelMode.Transit -> Motis.plan(from, to, listOf("TRANSIT"), departAt)
+        TravelMode.Train -> Motis.plan(from, to, listOf("RAIL,SUBURBAN", "RAIL"), departAt)
     }
 }
 
 /** Walking and cycling directions from the FOSSGIS OSRM instances (https://routing.openstreetmap.de). */
 private object Osrm {
-    suspend fun route(profile: String, legMode: LegMode, from: LatLon, to: LatLon): List<Itinerary> {
+    suspend fun route(profile: String, legMode: LegMode, from: LatLon, to: LatLon, departAt: Long?): List<Itinerary> {
         val url = ("https://routing.openstreetmap.de/$profile/route/v1/driving/" +
             "${from.lon},${from.lat};${to.lon},${to.lat}").toHttpUrl().newBuilder()
             .addQueryParameter("overview", "full")
@@ -29,7 +30,7 @@ private object Osrm {
         val json = JSONObject(Http.get(url))
         if (json.optString("code") != "Ok") error(json.optString("message", "No route found"))
         val routes = json.getJSONArray("routes")
-        val now = System.currentTimeMillis()
+        val now = departAt ?: System.currentTimeMillis()
         return (0 until routes.length()).map { i ->
             val r = routes.getJSONObject(i)
             val coords = r.getJSONObject("geometry").getJSONArray("coordinates")
@@ -96,7 +97,7 @@ private object Motis {
     private val apiVersions = listOf("v6", "v5", "v4", "v3", "v2", "v1")
     @Volatile private var workingVersion: String? = null
 
-    suspend fun plan(from: LatLon, to: LatLon, modeVariants: List<String>): List<Itinerary> {
+    suspend fun plan(from: LatLon, to: LatLon, modeVariants: List<String>, departAt: Long?): List<Itinerary> {
         var lastError: Exception? = null
         val versions = workingVersion?.let { listOf(it) } ?: apiVersions
         for (version in versions) {
@@ -106,6 +107,7 @@ private object Motis {
                         .addQueryParameter("fromPlace", "${from.lat},${from.lon}")
                         .addQueryParameter("toPlace", "${to.lat},${to.lon}")
                         .addQueryParameter("transitModes", modes)
+                        .apply { departAt?.let { addQueryParameter("time", java.time.Instant.ofEpochMilli(it).toString()) } }
                         .build()
                     val result = parse(JSONObject(Http.get(url)))
                     workingVersion = version

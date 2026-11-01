@@ -28,12 +28,17 @@ import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 
+/** A named feature found under a tap. */
+data class TappedFeature(val name: String, val pos: LatLon, val poiClass: String?, val subclass: String?)
+
 /** Route currently drawn on the map, already resolved to colours. */
 data class RouteDrawing(
     val itineraries: List<Itinerary>,
     val selected: Int,
     val origin: LatLon?,
     val destination: LatLon?,
+    /** Stops in between, drawn as numbered markers. */
+    val stops: List<LatLon> = emptyList(),
     /** Colour used for walking/cycling-only routes and walk legs inside transit trips. */
     val accent: String,
     val walk: String,
@@ -87,6 +92,7 @@ class MapController(private val context: Context) {
             route?.let { drawRoute(it) }
             drawOverlays()
             applyTransitFilters()
+            drawSelectedPlace()
             if (locationEnabled) activateLocation(loaded, palette)
             onLoaded()
         }
@@ -159,6 +165,41 @@ class MapController(private val context: Context) {
         runCatching {
             map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, left, top, right, bottom), 900)
         }
+    }
+
+    // ---------- Places ----------
+
+    /** A named map feature (POI or station) under the screen point of [pos], if any. */
+    fun placeAt(pos: LatLon): TappedFeature? {
+        val map = map ?: return null
+        val pt = map.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(pos.lat, pos.lon))
+        val r = 14f * context.resources.displayMetrics.density
+        val box = android.graphics.RectF(pt.x - r, pt.y - r, pt.x + r, pt.y + r)
+        val features = runCatching { map.queryRenderedFeatures(box, "poi", "station", "net-stations") }.getOrNull().orEmpty()
+        val f = features.firstOrNull { it.hasProperty("name") } ?: return null
+        val geom = f.geometry() as? org.maplibre.geojson.Point
+        val name = f.getStringProperty("name") ?: return null
+        return TappedFeature(
+            name = name,
+            pos = geom?.let { LatLon(it.latitude(), it.longitude()) } ?: pos,
+            poiClass = if (f.hasProperty("class")) f.getStringProperty("class") else null,
+            subclass = if (f.hasProperty("subclass")) f.getStringProperty("subclass") else null,
+        )
+    }
+
+    /** Pin for the place sheet's place (null hides it). */
+    fun setSelectedPlace(pos: LatLon?) {
+        selectedPlace = pos
+        drawSelectedPlace()
+    }
+
+    private var selectedPlace: LatLon? = null
+
+    private fun drawSelectedPlace() {
+        val s = style ?: return
+        val fc = JSONArray()
+        selectedPlace?.let { fc.put(point(it, JSONObject())) }
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_PLACE)?.setGeoJson(collection(fc))
     }
 
     // ---------- Overlays ----------
@@ -303,6 +344,9 @@ class MapController(private val context: Context) {
             }
             d.origin?.let { markers.put(point(it, JSONObject().put("role", "origin"))) }
             d.destination?.let { markers.put(point(it, JSONObject().put("role", "destination"))) }
+            d.stops.forEachIndexed { i, pos ->
+                markers.put(point(pos, JSONObject().put("role", "stop").put("label", "${i + 1}")))
+            }
         }
 
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_ROUTE)?.setGeoJson(collection(routeFeatures))

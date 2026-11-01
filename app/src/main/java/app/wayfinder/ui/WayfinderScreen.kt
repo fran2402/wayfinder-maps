@@ -68,6 +68,11 @@ import app.wayfinder.map.RouteDrawing
 import app.wayfinder.ui.components.LineSheet
 import app.wayfinder.ui.components.LinesSheet
 import app.wayfinder.ui.components.MapHost
+import app.wayfinder.ui.components.MultiTripSheet
+import app.wayfinder.ui.components.PlaceSheet
+import app.wayfinder.ui.components.humanizeCategory
+import app.wayfinder.data.Place
+import app.wayfinder.data.PlaceKind
 import app.wayfinder.ui.components.MapKeySheet
 import app.wayfinder.ui.components.MapToolbar
 import app.wayfinder.ui.components.ModeSelector
@@ -78,10 +83,11 @@ import app.wayfinder.ui.components.TripCard
 import kotlin.math.roundToInt
 
 /** What the bottom sheet is showing. */
-private enum class SheetMode { None, Trip, Key, Lines, Line }
+private enum class SheetMode { None, Place, Trip, Key, Lines, Line }
 
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
     SheetMode.Trip -> 440.dp
+    SheetMode.Place -> 260.dp
     SheetMode.Key -> 520.dp
     SheetMode.Lines -> 400.dp
     SheetMode.Line -> 380.dp
@@ -118,6 +124,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
     val picked = vm.highlightedLoaded
     val sheetMode = when {
+        vm.tappedPlace != null -> SheetMode.Place
         vm.planning -> SheetMode.Trip
         vm.showKey -> SheetMode.Key
         vm.transitVisible && picked != null -> SheetMode.Line
@@ -163,13 +170,16 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
             )
         }
     }
-    LaunchedEffect(vm.itineraries, vm.selected, vm.origin, vm.destination, vm.myLocation, palette, mapReady) {
+    LaunchedEffect(vm.tappedPlace, mapReady) { controller.setSelectedPlace(vm.tappedPlace?.place?.pos) }
+    LaunchedEffect(vm.itineraries, vm.selected, vm.segments, vm.stops, vm.origin, vm.destination, vm.myLocation, palette, mapReady) {
         val dest = vm.destination
+        val multi = vm.multiStop
         controller.setRoute(
             if (dest == null) null else RouteDrawing(
-                itineraries = vm.itineraries,
-                selected = vm.selected,
-                origin = vm.origin?.pos ?: vm.myLocation.takeIf { vm.origin == null && vm.itineraries.isNotEmpty() },
+                itineraries = if (multi) listOfNotNull(vm.combined) else vm.itineraries,
+                selected = if (multi) 0 else vm.selected,
+                stops = vm.stops.map { it.pos },
+                origin = vm.origin?.pos ?: vm.myLocation.takeIf { vm.origin == null && (vm.itineraries.isNotEmpty() || multi) },
                 destination = dest.pos,
                 accent = palette.accent,
                 walk = palette.walk,
@@ -178,8 +188,9 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.fitRequest, mapReady) {
         if (!mapReady || !vm.planning) return@LaunchedEffect
-        val points = vm.itineraries.getOrNull(vm.selected)?.geometry?.takeIf { it.size >= 2 }
-            ?: listOfNotNull(vm.origin?.pos ?: vm.myLocation, vm.destination?.pos)
+        val points = (if (vm.multiStop) vm.combined else vm.itineraries.getOrNull(vm.selected))
+            ?.geometry?.takeIf { it.size >= 2 }
+            ?: (listOfNotNull(vm.origin?.pos ?: vm.myLocation) + vm.stops.map { it.pos } + listOfNotNull(vm.destination?.pos))
         with(density) {
             controller.fit(
                 points,
@@ -209,7 +220,24 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
         sheetContent = {
             Box(Modifier.navigationBarsPadding()) {
                 when (sheetMode) {
-                    SheetMode.Trip -> RouteSheet(
+                    SheetMode.Place -> vm.tappedPlace?.let { detail ->
+                        PlaceSheet(
+                            detail = detail,
+                            planning = vm.planning,
+                            onDirections = { vm.directionsTo(detail.place) },
+                            onAddStop = { vm.addStopFromPlace(detail.place) },
+                            onClose = vm::closePlace,
+                        )
+                    }
+                    SheetMode.Trip -> if (vm.multiStop) MultiTripSheet(
+                        mode = vm.mode,
+                        segments = vm.segments,
+                        combined = vm.combined,
+                        loading = vm.loading,
+                        onMode = vm::selectMode,
+                        onSegmentMode = vm::setSegmentMode,
+                        onOption = vm::selectSegmentOption,
+                    ) else RouteSheet(
                         mode = vm.mode,
                         itineraries = vm.itineraries,
                         selected = vm.selected,
@@ -256,6 +284,18 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         vm.dropPin(pos)
                     },
+                    onTap = { pos: LatLon ->
+                        val f = controller.placeAt(pos)
+                        if (f != null) {
+                            vm.onPlaceTapped(
+                                Place(f.name, null, f.pos, if (f.poiClass in setOf("railway", "bus", "ferry_terminal")) PlaceKind.Station else PlaceKind.Place),
+                                humanizeCategory(f.subclass, f.poiClass),
+                                f.poiClass,
+                            )
+                        } else if (vm.tappedPlace != null) {
+                            vm.closePlace()
+                        }
+                    },
                     onViewport = vm::onViewport,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -276,10 +316,13 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     TripCard(
                         origin = vm.origin,
                         destination = dest,
+                        stops = vm.stops,
                         onBack = vm::clearTrip,
                         onEditOrigin = { vm.openSearch(SearchTarget.From) },
                         onEditDestination = { vm.openSearch(SearchTarget.To) },
                         onSwap = vm::swap,
+                        onAddStop = { vm.openSearch(SearchTarget.Stop) },
+                        onRemoveStop = vm::removeStop,
                     )
                 } else {
                     SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
@@ -366,9 +409,10 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
 
     BackHandler(enabled = vm.searchTarget != null) { vm.closeSearch() }
-    BackHandler(enabled = vm.searchTarget == null && vm.showKey && !vm.planning) { vm.toggleKey() }
-    BackHandler(enabled = vm.searchTarget == null && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
-    BackHandler(enabled = vm.searchTarget == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace != null) { vm.closePlace() }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.showKey && !vm.planning) { vm.toggleKey() }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
 }
 
 /** Trip sheet header: travel modes as a connected group, then the section title and layer chip. */

@@ -285,7 +285,7 @@ private fun summary(itinerary: Itinerary, isTransit: Boolean): String = if (isTr
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LegStrip(legs: List<Leg>) {
+internal fun LegStrip(legs: List<Leg>) {
     val visible = legs.filter { it.mode.isTransit || it.durationS >= 60 }
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),

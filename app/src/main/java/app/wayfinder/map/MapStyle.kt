@@ -94,6 +94,7 @@ object MapStyle {
     const val SRC_ROUTE_ALT = "route-alt"
     const val SRC_ROUTE_STOPS = "route-stops"
     const val SRC_MARKERS = "markers"
+    const val SRC_PLACE = "place"
     const val SRC_NETWORK = "transit"
     const val SRC_NETWORK_STOPS = "transit-stops"
     const val SRC_BIKE = "bike"
@@ -608,6 +609,31 @@ object MapStyle {
                 "circle-stroke-color" to p.accent,
                 "circle-stroke-width" to 4.0,
             )))
+        add(layer("marker-stop", "circle", source = SRC_MARKERS,
+            filter = eq("role", "stop"),
+            paint = obj(
+                "circle-color" to p.accent,
+                "circle-radius" to 11.0,
+                "circle-stroke-color" to p.surface,
+                "circle-stroke-width" to 3.0,
+            )))
+        add(layer("marker-stop-label", "symbol", source = SRC_MARKERS,
+            filter = eq("role", "stop"),
+            layout = obj(
+                "text-field" to get("label"),
+                "text-font" to fonts(BOLD),
+                "text-size" to 12,
+                "text-allow-overlap" to true,
+                "text-ignore-placement" to true,
+            ),
+            paint = obj("text-color" to p.surface)))
+        add(layer("marker-place", "symbol", source = SRC_PLACE,
+            layout = obj(
+                "icon-image" to "pin-destination",
+                "icon-anchor" to "bottom",
+                "icon-allow-overlap" to true,
+                "icon-ignore-placement" to true,
+            )))
         add(layer("marker-destination", "symbol", source = SRC_MARKERS,
             filter = eq("role", "destination"),
             layout = obj(
@@ -641,6 +667,7 @@ object MapStyle {
                 SRC_ROUTE_ALT to geojson(),
                 SRC_ROUTE_STOPS to geojson(),
                 SRC_MARKERS to geojson(),
+                SRC_PLACE to geojson(),
             ),
             "layers" to layers,
         )
@@ -749,6 +776,10 @@ object MapStyle {
         "culture" to "#5ED0D0", "worship" to "#B3ADA5", "education" to "#E2BF5C", "lodging" to "#F08ACB",
         "money" to "#A7B4C8", "fuel" to "#A7B4C8", "default" to "#B3ADA5",
     )
+
+    /** POI group ("food", "shop", …) for an OpenMapTiles poi class. */
+    fun poiGroupOf(poiClass: String?): String =
+        poiGroups.entries.firstOrNull { poiClass != null && poiClass in it.value }?.key ?: "default"
 
     private fun poiGroupExpr(mapTo: (String) -> Any): JSONArray {
         val e = arr("match", get("class"))
