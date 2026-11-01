@@ -105,6 +105,22 @@ class WayfinderViewModel : ViewModel() {
     /** Key of the line picked in the line pills, or null for all lines. */
     var highlightedLine by mutableStateOf<String?>(null)
         private set
+    /** The picked line's details, for the panel. */
+    val highlightedInfo: LineInfo?
+        get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key }?.info }
+    /** Area the camera should frame after a line is picked; bumped with [focusRequest]. */
+    var focusBounds by mutableStateOf<Bounds?>(null)
+        private set
+    var focusRequest by mutableStateOf(0)
+        private set
+
+    /** Overlays only make sense for the travel mode being planned. */
+    val transitAvailable: Boolean
+        get() = !planning || mode == TravelMode.Transit || mode == TravelMode.Train
+    val bikeAvailable: Boolean
+        get() = !planning || mode == TravelMode.Cycle
+    val transitVisible: Boolean get() = showTransit && transitAvailable
+    val bikeVisible: Boolean get() = showBike && bikeAvailable
 
     private var transitData: TransitData? = null
     private var transitJob: Job? = null
@@ -164,12 +180,14 @@ class WayfinderViewModel : ViewModel() {
         }
         closeSearch()
         plan()
+        overlaysChanged()
     }
 
     fun dropPin(pos: LatLon) {
         val pin = Place("Dropped pin", null, pos, PlaceKind.DroppedPin)
         destination = pin
         plan()
+        overlaysChanged()
         viewModelScope.launch {
             val named = runCatching { Geocoder.reverse(pos) }.getOrNull() ?: return@launch
             if (destination == pin) {
@@ -198,12 +216,14 @@ class WayfinderViewModel : ViewModel() {
         error = null
         loading = false
         selected = 0
+        overlaysChanged()
     }
 
     fun selectMode(m: TravelMode) {
         if (m == mode) return
         mode = m
         plan()
+        overlaysChanged()
     }
 
     fun select(index: Int) {
@@ -303,6 +323,19 @@ class WayfinderViewModel : ViewModel() {
 
     fun highlight(key: String?) {
         highlightedLine = if (highlightedLine == key) null else key
+        val picked = highlightedLine ?: return
+        transitData?.routes?.firstOrNull { it.info.key == picked }?.let {
+            focusBounds = it.bounds
+            focusRequest++
+        }
+    }
+
+    /** Re-evaluates overlays after the trip or travel mode changed. */
+    private fun overlaysChanged() {
+        if (!transitAvailable) highlightedLine = null
+        ensureTransit()
+        ensureBike()
+        updateHint()
     }
 
     fun onViewport(bounds: Bounds, zoom: Double) {
@@ -317,10 +350,10 @@ class WayfinderViewModel : ViewModel() {
         val zoom = lastViewport?.second
         val data = transitData
         overlayHint = when {
-            !showTransit && !showBike -> null
+            !transitVisible && !bikeVisible -> null
             overlayError != null -> overlayError
-            zoom != null && showBike && !showTransit && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
-            showTransit && data != null && data.zoomFiltered && legend.none { it.mode == TransitMode.Bus } &&
+            zoom != null && bikeVisible && !transitVisible && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
+            transitVisible && data != null && data.zoomFiltered && legend.none { it.mode == TransitMode.Bus } &&
                 TransitMode.Bus in transitModes -> "Zoom in to see trams and buses"
             else -> null
         }
@@ -330,7 +363,7 @@ class WayfinderViewModel : ViewModel() {
 
     /** Fetches routes for the view unless what we have already covers it. One request at a time. */
     private fun ensureTransit() {
-        if (!showTransit) return
+        if (!transitVisible) return
         val (view, zoom) = lastViewport ?: return
         val have = transitData
         val covered = have != null && have.area.contains(view) &&
@@ -380,7 +413,7 @@ class WayfinderViewModel : ViewModel() {
 
     private fun nextBikeBatch(): List<TileId>? {
         val (view, zoom) = lastViewport ?: return null
-        if (!showBike || zoom < Tier.Bike.minViewZoom) return null
+        if (!bikeVisible || zoom < Tier.Bike.minViewZoom) return null
         if ((retryAfter[Tier.Bike] ?: 0L) > System.currentTimeMillis()) return null
         return Tiles.covering(Tier.Bike, view.expanded(0.1)).filter { it !in loadedTiles }.take(2).ifEmpty { null }
     }

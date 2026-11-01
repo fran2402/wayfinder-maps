@@ -86,8 +86,7 @@ class MapController(private val context: Context) {
             setBikeVisible(bikeVisible)
             route?.let { drawRoute(it) }
             drawOverlays()
-            setTransitModes(transitModes)
-            highlightLine(highlightedLine)
+            applyTransitFilters()
             if (locationEnabled) activateLocation(loaded, palette)
             onLoaded()
         }
@@ -212,14 +211,28 @@ class MapController(private val context: Context) {
     /** Shows only the chosen kinds of public transport, both our lines and the base map's rail. */
     fun setTransitModes(modes: Set<TransitMode>) {
         transitModes = modes
-        val s = style ?: return
-        val names = JSONArray(modes.map { it.name })
-        val none = "[\"==\",1,0]"
-        val byMode = if (modes.isEmpty()) none else "[\"match\",[\"get\",\"mode\"],$names,true,false]"
-        listOf("net-lines-casing", "net-lines", "net-stops").forEach { s.getLayer(it)?.filter(byMode) }
-        s.getLayer("net-line-labels")?.filter("[\"all\",[\"!=\",[\"get\",\"ref\"],\"\"],$byMode]")
+        applyTransitFilters()
+    }
 
-        val subclasses = JSONArray(modes.flatMap {
+    /** Shows only line [key] (null shows every line again). */
+    fun highlightLine(key: String?) {
+        highlightedLine = key
+        applyTransitFilters()
+    }
+
+    private fun applyTransitFilters() {
+        val s = style ?: return
+        val none = "[\"==\",1,0]"
+        val names = JSONArray(transitModes.map { it.name })
+        val byMode = if (transitModes.isEmpty()) none else "[\"match\",[\"get\",\"mode\"],$names,true,false]"
+        val key = highlightedLine
+        val filter = if (key == null) byMode
+        else "[\"all\",$byMode,[\"==\",[\"get\",\"key\"],${JSONObject.quote(key)}]]"
+        listOf("net-lines-casing", "net-lines", "net-stops").forEach { s.getLayer(it)?.filter(filter) }
+        s.getLayer("net-line-labels")?.filter("[\"all\",[\"has\",\"pill\"],$filter]")
+
+        // The base map's rail stays as faint context; hide it while a single line is focused.
+        val subclasses = JSONArray(transitModes.flatMap {
             when (it) {
                 TransitMode.Train -> listOf("rail", "narrow_gauge", "preserved")
                 TransitMode.Metro -> listOf("subway", "light_rail", "monorail")
@@ -228,7 +241,7 @@ class MapController(private val context: Context) {
                 TransitMode.Bus, TransitMode.Ferry -> emptyList()
             }
         })
-        val tiles = if (subclasses.length() == 0) none else
+        val tiles = if (subclasses.length() == 0 || key != null) none else
             "[\"all\",[\"match\",[\"get\",\"class\"],[\"rail\",\"transit\"],true,false]," +
                 "[\"match\",[\"get\",\"subclass\"],$subclasses,true,false]]"
         listOf("net-tiles-casing", "net-tiles").forEach { s.getLayer(it)?.filter(tiles) }
@@ -241,26 +254,6 @@ class MapController(private val context: Context) {
             is CircleLayer -> setFilter(e)
             is SymbolLayer -> setFilter(e)
         }
-    }
-
-    /** Fades every transit line except [key]; null shows all lines again. */
-    fun highlightLine(key: String?) {
-        highlightedLine = key
-        val s = style ?: return
-        val match = Expression.eq(Expression.get("key"), Expression.literal(key ?: ""))
-        val lineOpacity = if (key == null) Expression.literal(1f)
-        else Expression.switchCase(match, Expression.literal(1f), Expression.literal(0.12f))
-        MapStyle.transitLineLayers.forEach { s.getLayer(it)?.setProperties(PropertyFactory.lineOpacity(lineOpacity)) }
-        val labelOpacity = if (key == null) Expression.literal(1f)
-        else Expression.switchCase(match, Expression.literal(1f), Expression.literal(0f))
-        s.getLayer("net-line-labels")?.setProperties(
-            PropertyFactory.iconOpacity(labelOpacity),
-            PropertyFactory.textOpacity(labelOpacity),
-        )
-        s.getLayer("net-stops")?.setProperties(
-            PropertyFactory.circleOpacity(labelOpacity),
-            PropertyFactory.circleStrokeOpacity(labelOpacity),
-        )
     }
 
     // ---------- Route ----------

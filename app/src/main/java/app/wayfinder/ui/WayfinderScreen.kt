@@ -5,7 +5,9 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -64,10 +66,9 @@ import app.wayfinder.data.LatLon
 import app.wayfinder.map.MapController
 import app.wayfinder.map.MapPalette
 import app.wayfinder.map.RouteDrawing
-import app.wayfinder.ui.components.LinePills
+import app.wayfinder.ui.components.LayerToggles
 import app.wayfinder.ui.components.MapHost
-import app.wayfinder.ui.components.ModeChips
-import app.wayfinder.ui.components.OverlayPills
+import app.wayfinder.ui.components.TransitPanel
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
 import app.wayfinder.ui.components.SearchOverlay
@@ -114,8 +115,21 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     LaunchedEffect(vm.hasLocationPermission, mapReady) {
         if (vm.hasLocationPermission && mapReady) controller.enableLocation()
     }
-    LaunchedEffect(vm.showTransit, mapReady) { controller.setNetworkVisible(vm.showTransit) }
-    LaunchedEffect(vm.showBike, mapReady) { controller.setBikeVisible(vm.showBike) }
+    LaunchedEffect(vm.transitVisible, mapReady) { controller.setNetworkVisible(vm.transitVisible) }
+    LaunchedEffect(vm.bikeVisible, mapReady) { controller.setBikeVisible(vm.bikeVisible) }
+    // Frame a line when it is picked in the panel.
+    LaunchedEffect(vm.focusRequest) {
+        val b = vm.focusBounds ?: return@LaunchedEffect
+        with(density) {
+            controller.fit(
+                listOf(LatLon(b.south, b.west), LatLon(b.north, b.east)),
+                left = 40.dp.roundToPx(),
+                top = (statusTop + if (vm.planning) 430.dp else 330.dp).roundToPx(),
+                right = 40.dp.roundToPx(),
+                bottom = (if (vm.planning) SheetPeek + 24.dp else 48.dp).roundToPx(),
+            )
+        }
+    }
     LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) {
         controller.setTransit(vm.transitLines, vm.transitStops, vm.transitPills)
     }
@@ -149,7 +163,12 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
             controller.fit(
                 points,
                 left = 48.dp.roundToPx(),
-                top = (statusTop + 250.dp).roundToPx(),
+                // Trip card + mode selector (+ layer toggles / transit card when shown).
+                top = (statusTop + 200.dp + when {
+                    vm.transitVisible -> 250.dp
+                    vm.transitAvailable || vm.bikeAvailable -> 60.dp
+                    else -> 0.dp
+                }).roundToPx(),
                 right = 48.dp.roundToPx(),
                 bottom = (SheetPeek + 32.dp).roundToPx(),
             )
@@ -208,18 +227,14 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 )
             }
 
-            // ---------- Top: search pill or trip card ----------
+            // ---------- Top: search pill or trip card, then map layers ----------
             Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .statusBarsPadding()
-                    .padding(vertical = 8.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
                     .fillMaxWidth(),
             ) {
-              Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
-              ) {
                 AnimatedContent(
                     targetState = vm.destination != null,
                     transitionSpec = {
@@ -231,7 +246,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 ) { planning ->
                     if (planning) {
                         val dest = vm.destination
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             if (dest != null) {
                                 TripCard(
                                     origin = vm.origin,
@@ -248,42 +263,50 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
                     }
                 }
-                OverlayPills(
-                    transitOn = vm.showTransit,
-                    transitLoading = vm.transitLoading,
-                    bikeOn = vm.showBike,
-                    bikeLoading = vm.bikeLoading,
-                    onTransit = { syncViewport(); vm.toggleTransit() },
-                    onBike = { syncViewport(); vm.toggleBike() },
-                )
-              }
+
                 AnimatedVisibility(
-                    visible = vm.showTransit,
-                    enter = fadeIn() + slideInVertically { -it / 2 },
-                    exit = fadeOut(),
+                    visible = vm.transitAvailable || vm.bikeAvailable,
+                    enter = fadeIn(motion.defaultEffectsSpec()) + expandVertically(motion.defaultSpatialSpec()),
+                    exit = fadeOut(motion.fastEffectsSpec()) + shrinkVertically(motion.fastSpatialSpec()),
                 ) {
-                    ModeChips(enabled = vm.transitModes, onToggle = vm::toggleMode)
+                    LayerToggles(
+                        showTransitToggle = vm.transitAvailable,
+                        transitOn = vm.showTransit,
+                        transitLoading = vm.transitLoading && !vm.transitVisible,
+                        showBikeToggle = vm.bikeAvailable,
+                        bikeOn = vm.showBike,
+                        bikeLoading = vm.bikeLoading,
+                        onTransit = { syncViewport(); vm.toggleTransit() },
+                        onBike = { syncViewport(); vm.toggleBike() },
+                    )
                 }
-                val lines = vm.legend
+
                 AnimatedVisibility(
-                    visible = vm.showTransit && lines.isNotEmpty(),
-                    enter = fadeIn() + slideInVertically { -it / 2 },
-                    exit = fadeOut(),
+                    visible = vm.transitVisible,
+                    enter = fadeIn(motion.defaultEffectsSpec()) + expandVertically(motion.defaultSpatialSpec()),
+                    exit = fadeOut(motion.fastEffectsSpec()) + shrinkVertically(motion.fastSpatialSpec()),
                 ) {
-                    LinePills(lines = lines, highlighted = vm.highlightedLine, onClick = vm::highlight)
+                    TransitPanel(
+                        modes = vm.transitModes,
+                        onToggleMode = vm::toggleMode,
+                        lines = vm.legend,
+                        selected = vm.highlightedInfo,
+                        onLine = vm::highlight,
+                        loading = vm.transitLoading,
+                        hint = vm.overlayHint,
+                    )
                 }
+
                 AnimatedVisibility(
-                    visible = vm.overlayHint != null,
+                    visible = !vm.transitVisible && vm.overlayHint != null,
                     enter = fadeIn() + scaleIn(initialScale = 0.9f),
                     exit = fadeOut() + scaleOut(targetScale = 0.9f),
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
                 ) {
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.inverseSurface,
                         contentColor = MaterialTheme.colorScheme.inverseOnSurface,
                         shadowElevation = 4.dp,
-                        modifier = Modifier.padding(horizontal = 16.dp),
                     ) {
                         Text(
                             vm.overlayHint.orEmpty(),
@@ -299,8 +322,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 horizontalAlignment = Alignment.End,
                 modifier = Modifier
-                    .align(if (vm.planning) Alignment.CenterEnd else Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = if (vm.planning) 0.dp else 24.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = if (vm.planning) SheetPeek + 16.dp else 24.dp)
                     .navigationBarsPadding(),
             ) {
                 FloatingActionButton(
