@@ -334,14 +334,18 @@ object MapStyle {
             13, byMode(8.0, 8.8, 7.0, 4.6, 0.0),
             18, byMode(13.0, 14.5, 11.5, 8.0, 0.0))
         val solidModes = arr("match", get("mode"), arr("Ferry", "Other"), false, true)
+        // Lines sharing a street sit side by side: "off" is the line's slot across the street.
+        fun slot(px: Double) = arr("*", arr("coalesce", get("off"), 0), px)
+        val lineOffset = arr("interpolate", arr("linear"), arr("zoom"),
+            10, slot(2.4), 13, slot(4.6), 16, slot(7.0), 18, slot(10.0))
         add(layer("net-lines-casing", "line", source = SRC_NETWORK, visibility = netVis,
             filter = solidModes,
             layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
-            paint = obj("line-color" to p.surface, "line-width" to casingWidth)))
+            paint = obj("line-offset" to lineOffset, "line-color" to p.surface, "line-width" to casingWidth)))
         add(layer("net-lines", "line", source = SRC_NETWORK, visibility = netVis,
             filter = solidModes,
             layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
-            paint = obj(
+            paint = obj("line-offset" to lineOffset, 
                 "line-color" to get("color"),
                 "line-opacity" to arr("match", get("mode"), "Bus", 0.9, 1.0),
                 "line-width" to lineWidth,
@@ -349,7 +353,7 @@ object MapStyle {
         add(layer("net-rail-ties", "line", source = SRC_NETWORK, visibility = netVis, minzoom = 10.0,
             filter = eq("mode", "Train"),
             layout = obj("line-join" to "round"),
-            paint = obj(
+            paint = obj("line-offset" to lineOffset, 
                 "line-color" to p.surface,
                 "line-width" to zoomLinear(10 to 0.8, 13 to 1.4, 18 to 2.2),
                 "line-dasharray" to arr("literal", arr(3.0, 3.0)),
@@ -357,11 +361,11 @@ object MapStyle {
         add(layer("net-tram-track", "line", source = SRC_NETWORK, visibility = netVis, minzoom = 11.0,
             filter = eq("mode", "Tram"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
-            paint = obj("line-color" to p.surface, "line-width" to zoomLinear(11 to 0.6, 13 to 1.0, 18 to 1.8))))
+            paint = obj("line-offset" to lineOffset, "line-color" to p.surface, "line-width" to zoomLinear(11 to 0.6, 13 to 1.0, 18 to 1.8))))
         add(layer("net-ferry", "line", source = SRC_NETWORK, visibility = netVis,
             filter = eq("mode", "Ferry"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
-            paint = obj(
+            paint = obj("line-offset" to lineOffset, 
                 "line-color" to get("color"),
                 "line-width" to zoomLinear(9 to 1.6, 13 to 3.0, 18 to 5.0),
                 "line-dasharray" to arr("literal", arr(3.0, 2.0)),
@@ -369,7 +373,7 @@ object MapStyle {
         add(layer("net-other", "line", source = SRC_NETWORK, visibility = netVis,
             filter = eq("mode", "Other"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
-            paint = obj(
+            paint = obj("line-offset" to lineOffset, 
                 "line-color" to get("color"),
                 "line-width" to zoomLinear(9 to 2.5, 13 to 4.5, 18 to 7.0),
                 "line-dasharray" to arr("literal", arr(0.01, 2.0)),

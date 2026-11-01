@@ -280,7 +280,7 @@ private fun RegionRow(
                     when {
                         download != null && download.finishing -> "Preparing zoomed-out views…"
                         download != null && download.retrying -> "Second try · ${download.failed} map squares left"
-                        download != null -> "Downloading ${download.done} of ${download.total} map squares" +
+                        download != null -> "Lines ${download.done} of ${download.total} · bike routes ${download.bikesDone}" +
                             if (download.failed > 0) " · ${download.failed} failed" else ""
                         saved != null && saved.complete -> "Downloaded · ${formatBytes(saved.bytes)}"
                         saved != null -> "Partly downloaded · ${formatBytes(saved.bytes)}"

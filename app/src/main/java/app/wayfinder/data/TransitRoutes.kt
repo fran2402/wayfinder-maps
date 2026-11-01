@@ -525,7 +525,7 @@ object TransitRoutes {
             Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()), r.routeIdx)
     }
 
-    fun merge(tiles: Collection<TileData>, withStops: Boolean = true): TransitData {
+    fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false): TransitData {
         class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()
             val ids = HashSet<Int>()
@@ -545,6 +545,12 @@ object TransitRoutes {
             }
         }
 
+        // Lines sharing a street are drawn side by side: each run of a shape gets a slot offset.
+        val runs: Map<String, Map<Float, List<FloatArray>>>? =
+            if (spread && byKey.values.sumOf { a -> a.parts.sumOf { it.size } } < 1_500_000)
+                spreadRuns(byKey.entries.map { (k, a) -> Triple(k, a.first, a.parts as List<FloatArray>) })
+            else null
+
         val lines = StringBuilder(1 shl 16).append("""{"type":"FeatureCollection","features":[""")
         val stopFeatures = LinkedHashMap<String, Pair<Int, String>>() // id -> (rank, json)
         val loaded = ArrayList<LoadedLine>()
@@ -552,25 +558,28 @@ object TransitRoutes {
         for ((key, acc) in byKey) {
             val r = acc.first
             val colorHex = Palette.hex(r.color)
-            if (!first) lines.append(',')
-            first = false
-            lines.append("""{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[""")
-            acc.parts.forEachIndexed { pi, pts ->
-                if (pi > 0) lines.append(',')
-                lines.append('[')
-                var k = 0
-                while (k < pts.size) {
-                    if (k > 0) lines.append(',')
-                    lines.append('[').appendCoord(pts[k + 1]).append(',').appendCoord(pts[k]).append(']')
-                    k += 2
+            val groups: Map<Float, List<FloatArray>> = runs?.get(key) ?: mapOf(0f to acc.parts)
+            for ((off, parts) in groups) {
+                if (!first) lines.append(',')
+                first = false
+                lines.append("""{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[""")
+                parts.forEachIndexed { pi, pts ->
+                    if (pi > 0) lines.append(',')
+                    lines.append('[')
+                    var k = 0
+                    while (k < pts.size) {
+                        if (k > 0) lines.append(',')
+                        lines.append('[').appendCoord(pts[k + 1]).append(',').appendCoord(pts[k]).append(']')
+                        k += 2
+                    }
+                    lines.append(']')
                 }
-                lines.append(']')
+                lines.append("""]},"properties":{"key":""").append(quote(key))
+                    .append(""","route":"${r.osmRoute}","mode":"${r.mode.name}","ref":""").append(quote(r.ref))
+                    .append(""","color":"$colorHex","text":"${Palette.hex(r.text)}","rank":${r.rank},"off":$off""")
+                if (r.ref.isNotBlank()) lines.append(""","pill":"${pillId(key)}"""")
+                lines.append("}}")
             }
-            lines.append("""]},"properties":{"key":""").append(quote(key))
-                .append(""","route":"${r.osmRoute}","mode":"${r.mode.name}","ref":""").append(quote(r.ref))
-                .append(""","color":"$colorHex","text":"${Palette.hex(r.text)}","rank":${r.rank}""")
-            if (r.ref.isNotBlank()) lines.append(""","pill":"${pillId(key)}"""")
-            lines.append("}}")
 
             if (withStops) for (st in acc.stops) {
                 val id = st.id.ifBlank { "${st.lat},${st.lon}" }
@@ -614,6 +623,97 @@ object TransitRoutes {
         val dLat = Math.toRadians((lat2 - lat1).toDouble())
         val dLon = Math.toRadians((lon2 - lon1).toDouble()) * kotlin.math.cos(Math.toRadians(lat1.toDouble()))
         return 6_371_000.0 * kotlin.math.sqrt(dLat * dLat + dLon * dLon)
+    }
+
+    // ---------- Side-by-side lines ----------
+
+    /**
+     * For every line, splits its shapes into runs that each carry a sideways slot: where n lines
+     * follow the same street in the same direction band, they get slots -(n-1)/2 … (n-1)/2 in
+     * a fixed order (trains, metro, trams, buses; then by number), so they sit next to each
+     * other instead of on top of each other. Slots are flipped for shapes drawn the other way
+     * round, so each line keeps its side whichever way its shape runs.
+     */
+    private fun spreadRuns(lines: List<Triple<String, TileRoute, List<FloatArray>>>): Map<String, Map<Float, List<FloatArray>>> {
+        val order = lines.sortedWith(compareBy<Triple<String, TileRoute, List<FloatArray>>> { it.second.mode.ordinal }
+            .thenComparator { a, b -> Palette.naturalCompare(a.second.ref, b.second.ref) })
+        val gi = HashMap<String, Int>(order.size * 2).apply { order.forEachIndexed { i, t -> put(t.first, i) } }
+        val cell = 0.00025 // about 28 m
+        val buckets = 12
+        val grid = HashMap<Long, IntArray>(1 shl 16) // key -> small set of line indexes (-1 = empty)
+
+        fun keyOf(lat: Double, lon: Double, dir: Int): Long {
+            val cx = Math.floor(lon * Math.cos(Math.toRadians(lat)) / cell).toLong() and 0x3FFFFF
+            val cy = Math.floor(lat / cell).toLong() and 0x3FFFFF
+            return (cx shl 26) or (cy shl 4) or dir.toLong()
+        }
+        fun add(key: Long, g: Int) {
+            val cur = grid[key]
+            if (cur == null) { grid[key] = intArrayOf(g, -1, -1, -1); return }
+            for (i in cur.indices) { if (cur[i] == g) return; if (cur[i] == -1) { cur[i] = g; return } }
+            val grown = cur.copyOf(cur.size * 2); grown.fill(-1, cur.size); grown[cur.size] = g; grid[key] = grown
+        }
+        fun angleOf(la0: Float, lo0: Float, la1: Float, lo1: Float): Double {
+            val dx = (lo1 - lo0) * Math.cos(Math.toRadians(la0.toDouble())); val dy = (la1 - la0).toDouble()
+            var a = Math.atan2(dy, dx); if (a < 0) a += Math.PI; if (a >= Math.PI) a -= Math.PI
+            return a / Math.PI * buckets // 0 until buckets
+        }
+
+        // Pass 1: mark the cells each line passes through, per direction band.
+        for ((k, _, parts) in lines) {
+            val g = gi[k] ?: continue
+            for (pts in parts) {
+                var i = 0
+                while (i + 3 < pts.size) {
+                    val la0 = pts[i]; val lo0 = pts[i + 1]; val la1 = pts[i + 2]; val lo1 = pts[i + 3]
+                    val a = angleOf(la0, lo0, la1, lo1)
+                    val b = a.toInt() % buckets
+                    val nb = (if (a - b >= 0.5) b + 1 else b - 1 + buckets) % buckets
+                    val dLat = (la1 - la0).toDouble(); val dLon = (lo1 - lo0).toDouble()
+                    val len = Math.hypot(dLat, dLon * Math.cos(Math.toRadians(la0.toDouble())))
+                    val steps = (len / (cell / 2)).toInt().coerceIn(1, 400)
+                    for (sIdx in 0..steps) {
+                        val f = sIdx.toDouble() / steps
+                        val la = la0 + dLat * f; val lo = lo0 + dLon * f
+                        add(keyOf(la, lo, b), g); add(keyOf(la, lo, nb), g)
+                    }
+                    i += 2
+                }
+            }
+        }
+
+        // Pass 2: each segment takes its slot at its midpoint; equal slots join into runs.
+        val out = HashMap<String, Map<Float, List<FloatArray>>>(lines.size * 2)
+        for ((k, _, parts) in lines) {
+            val g = gi[k] ?: continue
+            val byOff = HashMap<Float, MutableList<FloatArray>>()
+            for (pts in parts) {
+                var runStart = 0
+                var runOff = Float.NaN
+                var i = 0
+                while (i + 3 < pts.size) {
+                    val la0 = pts[i]; val lo0 = pts[i + 1]; val la1 = pts[i + 2]; val lo1 = pts[i + 3]
+                    val b = angleOf(la0, lo0, la1, lo1).toInt() % buckets
+                    val set = grid[keyOf((la0 + la1) / 2.0, (lo0 + lo1) / 2.0, b)]
+                    var n = 0; var slot = 0
+                    if (set != null) for (x in set) { if (x == -1) break; n++; if (x < g) slot++ }
+                    var off = if (n <= 1) 0f else slot - (n - 1) / 2f
+                    val reversed = lo1 < lo0 || (lo1 == lo0 && la1 < la0)
+                    if (reversed) off = -off
+                    if (runOff.isNaN()) runOff = off
+                    if (off != runOff) {
+                        byOff.getOrPut(runOff) { ArrayList() } += pts.copyOfRange(runStart, i + 2)
+                        runStart = i
+                        runOff = off
+                    }
+                    i += 2
+                }
+                if (runOff.isNaN()) runOff = 0f
+                byOff.getOrPut(runOff) { ArrayList() } += if (runStart == 0) pts else pts.copyOfRange(runStart, pts.size)
+            }
+            out[k] = byOff
+        }
+        return out
     }
 
     // ---------- Helpers ----------

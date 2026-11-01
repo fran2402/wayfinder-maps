@@ -9,6 +9,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -230,7 +231,14 @@ class OfflineTransit(context: Context) {
      */
     @Volatile private var learnedDepth = 0
 
-    fun isUnitDone(x: Int, y: Int) = has(Level.City, x, y) && hasBike(x, y)
+    /** True once a download square's lines are on disk. */
+    fun hasLines(x: Int, y: Int) = has(Level.City, x, y)
+
+    /** The download square containing a tile of any level at or below City size. */
+    fun unitOf(z: Int, x: Int, y: Int): Pair<Int, Int> {
+        val shift = z - Level.City.z
+        return if (shift >= 0) (x shr shift) to (y shr shift) else (x shl -shift) to (y shl -shift)
+    }
 
     /**
      * Downloads one unit at full detail: its Street tiles, then its City tile. Requests for the
@@ -257,7 +265,7 @@ class OfflineTransit(context: Context) {
                 }
             }
         }
-        val start = learnedDepth.coerceIn(0, 3)
+        val start = learnedDepth.coerceIn(0, 4)
         coroutineScope {
             split(unit, start).map { piece -> async { fetchArea(piece, start, onProblem, sink) } }.awaitAll()
         }
@@ -275,18 +283,27 @@ class OfflineTransit(context: Context) {
         write(Level.City, x, y, cityTile) // last: marks the unit done
     }
 
-    /** Builds the continent-view tiles of a region from its City tiles (no network). */
-    suspend fun buildOverview(region: Region) = withContext(Dispatchers.Default) {
-        val (rx, ry) = range(region.area, Level.Rail.z)
-        val k = 1 shl (Level.City.z - Level.Rail.z)
-        for (x in rx) for (y in ry) {
+    private val railLock = kotlinx.coroutines.sync.Mutex()
+
+    /** Rebuilds one continent-view tile from the City tiles under it (no network). */
+    suspend fun rebuildRail(x: Int, y: Int) = railLock.withLock {
+        withContext(Dispatchers.Default) {
+            val k = 1 shl (Level.City.z - Level.Rail.z)
             val b = TransitRoutes.TileBuilder()
+            var any = false
             for (i in 0 until k) for (j in 0 until k) {
                 val t = read(Level.City, x * k + i, y * k + j) ?: continue
+                any = true
                 b.addAll(TransitRoutes.reduce(t, Level.Rail.detailZoom, Int.MAX_VALUE))
             }
-            write(Level.Rail, x, y, TransitRoutes.reduce(b.build(), Level.Rail.detailZoom, Level.Rail.maxRoutes))
+            if (any) write(Level.Rail, x, y, TransitRoutes.reduce(b.build(), Level.Rail.detailZoom, Level.Rail.maxRoutes))
         }
+    }
+
+    /** Builds the continent-view tiles of a region from its City tiles. */
+    suspend fun buildOverview(region: Region) {
+        val (rx, ry) = range(region.area, Level.Rail.z)
+        for (x in rx) for (y in ry) rebuildRail(x, y)
     }
 
     private fun split(area: Bounds, depth: Int): List<Bounds> {

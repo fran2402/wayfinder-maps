@@ -109,6 +109,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val retrying: Boolean = false,
         /** Building the zoomed-out tiles from what was downloaded. */
         val finishing: Boolean = false,
+        /** Bike routes run in their own, slower queue (Overpass allows few requests at once). */
+        val bikesDone: Int = 0,
     )
     var download by mutableStateOf<DownloadState?>(null)
         private set
@@ -134,57 +136,72 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             savedRegions = offlineStore.saved()
             var done = 0
             var failed = 0
+            var bikesDone = 0
+            var bikesFailed = 0
             var problem: String? = null
             var retrying = false
             var finishing = false
-            fun publish() { download = DownloadState(region, done, units.size, failed, problem, retrying, finishing) }
-            suspend fun get(x: Int, y: Int): Boolean = try {
-                coroutineScope {
-                    val lines = async { offlineStore.downloadUnit(x, y, force = refresh) { problem = it; publish() } }
-                    val bikes = async { offlineStore.downloadBike(x, y, force = refresh) { problem = it; publish() } }
-                    lines.await(); bikes.await()
-                }
-                true
+            fun publish() {
+                download = DownloadState(region, done, units.size, failed, problem, retrying, finishing, bikesDone)
+            }
+            suspend fun attempt(block: suspend () -> Unit): Boolean = try {
+                block(); true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 problem = e.message?.take(60) ?: e.javaClass.simpleName
                 false
             }
-            suspend fun runAll(list: List<Pair<Int, Int>>, workers: Int, onResult: (Pair<Int, Int>, Boolean) -> Unit) {
+            suspend fun runAll(list: List<Pair<Int, Int>>, workers: Int, work: suspend (Pair<Int, Int>) -> Unit) {
                 val queue = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
                 list.forEach { queue.trySend(it) }
                 queue.close()
-                coroutineScope {
-                    repeat(workers) {
-                        launch { for (u in queue) onResult(u, get(u.first, u.second)) }
-                    }
-                }
+                coroutineScope { repeat(workers) { launch { for (u in queue) work(u) } } }
             }
+            val center = lastViewport?.first?.let { Tiles.lonToX((it.west + it.east) / 2, 8) to Tiles.latToY((it.south + it.north) / 2, 8) }
+            fun nearFirst(list: List<Pair<Int, Int>>) = if (center == null) list else list.sortedBy {
+                val dx = it.first - center.first; val dy = it.second - center.second; dx * dx + dy * dy
+            }
+            var complete = false
             try {
-                val (finished, todo) = units.partition { !refresh && offlineStore.isUnitDone(it.first, it.second) }
-                done = finished.size
-                publish()
-                val missed = ArrayList<Pair<Int, Int>>()
-                runAll(todo, workers = 8) { u, ok ->
-                    if (!ok) { failed++; missed += u }
-                    done++
-                    if (ok && done % 4 == 0) problem = null
+                coroutineScope {
+                    // Bike routes: their own queue, so slow Overpass never holds up the lines.
+                    val bikes = launch {
+                        val todo = units.filter { refresh || !offlineStore.hasBike(it.first, it.second) }
+                        bikesDone = units.size - todo.size
+                        runAll(nearFirst(todo), workers = 2) { u ->
+                            if (attempt { offlineStore.downloadBike(u.first, u.second, force = refresh) { } }) bikesDone++ else bikesFailed++
+                            publish()
+                        }
+                    }
+                    val todo = units.filter { refresh || !offlineStore.hasLines(it.first, it.second) }
+                    done = units.size - todo.size
                     publish()
-                }
-                // A second, gentler pass for whatever failed the first time.
-                if (missed.isNotEmpty()) {
-                    retrying = true
+                    val missed = ArrayList<Pair<Int, Int>>()
+                    runAll(nearFirst(todo), workers = 12) { u ->
+                        val ok = attempt { offlineStore.downloadUnit(u.first, u.second, force = refresh) { problem = it; publish() } }
+                        if (ok) unitArrived(u) else { failed++; missed += u }
+                        done++
+                        if (ok && done % 8 == 0) problem = null
+                        publish()
+                    }
+                    if (missed.isNotEmpty()) {
+                        retrying = true
+                        publish()
+                        delay(5_000)
+                        runAll(missed, workers = 6) { u ->
+                            if (attempt { offlineStore.downloadUnit(u.first, u.second, force = refresh) { } }) { failed--; unitArrived(u); publish() }
+                        }
+                    }
+                    finishing = true
                     publish()
-                    delay(10_000)
-                    runAll(missed, workers = 4) { _, ok -> if (ok) { failed--; publish() } }
+                    offlineStore.buildOverview(region)
+                    bikes.join()
+                    complete = failed == 0 && bikesFailed == 0
                 }
-                finishing = true
-                publish()
-                offlineStore.buildOverview(region)
             } finally {
                 withContext(NonCancellable) {
-                    offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = failed == 0 && finishing))
+                    offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = complete))
                     savedRegions = offlineStore.saved()
                     download = null
                     tileCache.clear()
@@ -798,7 +815,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             !transitVisible && !bikeVisible -> null
             overlayError != null -> overlayError
             zoom != null && bikeVisible && !transitVisible && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
-            transitVisible && zoom != null && zoom < 11 && TransitMode.Bus in transitModes && !viewOffline -> "Zoom in to see buses"
+            transitVisible && zoom != null && zoom >= minLineZoom && zoom < AUTO_SAVE_ZOOM && neededTiles.isEmpty() ->
+                "Zoom in to load lines here"
             else -> null
         }
     }
@@ -816,102 +834,112 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         return out.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(12)
     }
 
-    /**
-     * Downloaded tiles covering the view at the level for this zoom, plus online tiles for any
-     * part of the view that isn't downloaded; null when nothing in view is downloaded.
-     */
-    private fun offlineTilesFor(area: Bounds, zoom: Double): List<TKey>? {
-        if (savedRegions.isEmpty()) return null
-        val level = when {
-            zoom < 8.0 -> OfflineTransit.Level.Rail
-            zoom < 11.5 -> OfflineTransit.Level.City
-            else -> OfflineTransit.Level.Street
-        }
-        val x0 = Tiles.lonToX(area.west, level.z); val x1 = Tiles.lonToX(area.east, level.z)
-        val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
-        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 220) return null
-        val keys = ArrayList<TKey>()
-        val gaps = ArrayList<Bounds>()
-        for (x in x0..x1) for (y in y0..y1) {
-            if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true)
-            else gaps += Tiles.bounds(level.z, x, y)
-        }
-        if (keys.isEmpty()) return null
-        if (gaps.isEmpty()) return keys
-        val online = tilesFor(area, zoom).filter { k -> val b = Tiles.bounds(k.z, k.x, k.y); gaps.any { it.intersects(b) } }
-        return keys + online
+    // Lines always come from the phone. Wherever the map is looked at (zoomed in past
+    // [AUTO_SAVE_ZOOM]), missing download squares are fetched once in the background and kept.
+
+    private fun levelFor(zoom: Double) = when {
+        zoom < 8.0 -> OfflineTransit.Level.Rail
+        zoom < 11.5 -> OfflineTransit.Level.City
+        else -> OfflineTransit.Level.Street
     }
 
-    /** True when every line in view comes from downloaded data. */
-    private var viewOffline = false
+    /** Below this zoom a view spans too many squares to save on the fly. */
+    private val AUTO_SAVE_ZOOM = 7.0
 
-    /** Loads the tiles the view needs (one at a time, nearest first) and redraws as they arrive. */
+    private val autoInFlight = HashSet<Pair<Int, Int>>()
+    private val autoFailedAt = HashMap<Pair<Int, Int>, Long>()
+    private var wantedUnits: List<Pair<Int, Int>> = emptyList()
+
+    /** Forgets cached tiles that a newly saved square changes, and redraws if it is in view. */
+    private fun unitArrived(u: Pair<Int, Int>) {
+        tileCache.keys.removeAll { k -> offlineStore.unitOf(k.z, k.x, k.y).let { (ux, uy) ->
+            if (k.z >= OfflineTransit.Level.City.z) ux == u.first && uy == u.second
+            else (u.first shr (OfflineTransit.Level.City.z - k.z)) == k.x && (u.second shr (OfflineTransit.Level.City.z - k.z)) == k.y
+        } }
+        tileFailedAt.clear()
+        ensureTransit()
+    }
+
+    private fun pumpAutoSave() {
+        val now = System.currentTimeMillis()
+        while (autoInFlight.size < 6) {
+            val u = wantedUnits.firstOrNull {
+                it !in autoInFlight && !offlineStore.hasLines(it.first, it.second) &&
+                    (autoFailedAt[it]?.let { t -> now - t > 30_000 } ?: true)
+            } ?: break
+            autoInFlight += u
+            transitLoading = true
+            viewModelScope.launch {
+                try {
+                    offlineStore.downloadUnit(u.first, u.second) { }
+                    offlineStore.rebuildRail(u.first shr 2, u.second shr 2)
+                    autoFailedAt.remove(u)
+                    overlayError = null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    autoFailedAt[u] = System.currentTimeMillis()
+                    overlayError = "Couldn't load lines here (${e.message ?: e.javaClass.simpleName}). Retrying…"
+                    retryJob?.cancel()
+                    retryJob = viewModelScope.launch { delay(31_000); ensureTransit() }
+                } finally {
+                    autoInFlight -= u
+                    transitLoading = autoInFlight.isNotEmpty()
+                    updateHint()
+                    unitArrived(u)
+                }
+            }
+        }
+    }
+
+    /** Shows the saved tiles for the view and saves any missing squares around it. */
     private fun ensureTransit() {
         if (!transitVisible) return
         val (view, zoom) = lastViewport ?: return
         if (zoom < minLineZoom) return
-        neededTiles = offlineTilesFor(view.expanded(0.15), zoom) ?: tilesFor(view.expanded(0.15), zoom)
-        viewOffline = neededTiles.isNotEmpty() && neededTiles.all { it.offline }
+        val area = view.expanded(0.15)
+        val level = levelFor(zoom)
+        val x0 = Tiles.lonToX(area.west, level.z); val x1 = Tiles.lonToX(area.east, level.z)
+        val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
+        val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0
+        val keys = ArrayList<TKey>()
+        for (x in x0..x1) for (y in y0..y1) if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true)
+        neededTiles = keys.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(220)
+
+        val ux0 = Tiles.lonToX(area.west, 8); val ux1 = Tiles.lonToX(area.east, 8)
+        val uy0 = Tiles.latToY(area.north, 8); val uy1 = Tiles.latToY(area.south, 8)
+        val ucx = (ux0 + ux1) / 2.0; val ucy = (uy0 + uy1) / 2.0
+        wantedUnits = if (zoom < AUTO_SAVE_ZOOM || (ux1 - ux0 + 1) * (uy1 - uy0 + 1) > 40) emptyList() else
+            (ux0..ux1).flatMap { x -> (uy0..uy1).map { y -> x to y } }
+                .sortedBy { (it.first - ucx) * (it.first - ucx) + (it.second - ucy) * (it.second - ucy) }
+        pumpAutoSave()
+
         val available = neededTiles.filter { it in tileCache }.toSet()
         // Keep the previous lines on screen until at least one tile of the new view is ready.
-        if (available.isNotEmpty() && available != shownTiles) rebuildTransit()
+        if (available != shownTiles && (available.isNotEmpty() || neededTiles.isEmpty())) rebuildTransit()
         if (transitJob?.isActive == true) return
         transitJob = viewModelScope.launch {
-            var failed = false
             while (true) {
-                val now = System.currentTimeMillis()
-                val next = neededTiles.firstOrNull { key ->
-                    key !in tileCache && (tileFailedAt[key]?.let { now - it > 8_000 } ?: true)
-                } ?: break
-                if (next.offline) {
-                    // From disk: fast, no throttling, no error banner.
-                    val level = offlineStore.levelForZ(next.z)
-                    val data = level?.let { offlineStore.read(it, next.x, next.y) }?.let { t ->
-                        // Lighter shapes for zoomed-out views: fewer points for the map to tile.
-                        withContext(storeThread) {
-                            when (level) {
-                                OfflineTransit.Level.Rail -> TransitRoutes.reduce(t, 7, 1_500)
-                                OfflineTransit.Level.City -> TransitRoutes.reduce(t, 10, 4_000)
-                                OfflineTransit.Level.Street -> t
-                            }
+                val next = neededTiles.firstOrNull { it !in tileCache && it !in tileFailedAt } ?: break
+                val lvl = offlineStore.levelForZ(next.z)
+                val data = lvl?.let { offlineStore.read(it, next.x, next.y) }?.let { t ->
+                    // Lighter shapes for zoomed-out views: fewer points for the map to tile.
+                    withContext(storeThread) {
+                        when (lvl) {
+                            OfflineTransit.Level.Rail -> TransitRoutes.reduce(t, 7, 1_500)
+                            OfflineTransit.Level.City -> TransitRoutes.reduce(t, 10, 4_000)
+                            OfflineTransit.Level.Street -> t
                         }
                     }
-                    if (data != null) {
-                        tileCache[next] = data
-                        if (next in neededTiles) rebuildTransit()
-                    } else {
-                        tileFailedAt[next] = now
-                    }
-                    continue
                 }
-                transitLoading = true
-                try {
-                    val bounds = Tiles.bounds(next.z, next.x, next.y)
-                    // Ask the server for much more detail than the tile's zoom (it hides metro and trams
-                    // until far in), but keep buses for street-level views only.
-                    val data = TransitRoutes.loadTile(bounds, (next.z + 3).coerceAtMost(15), includeBus = next.z >= 10)
+                if (data != null) {
                     tileCache[next] = data
-                    tileFailedAt.remove(next)
-                    overlayError = null
                     if (next in neededTiles) rebuildTransit()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    tileFailedAt[next] = now
-                    failed = true
-                    overlayError = "Some transit lines didn't load (${e.message ?: e.javaClass.simpleName}). Retrying…"
+                } else {
+                    tileFailedAt[next] = System.currentTimeMillis()
                 }
-                updateHint()
             }
-            transitLoading = false
             updateHint()
-            if (failed) {
-                retryJob?.cancel()
-                retryJob = viewModelScope.launch {
-                    delay(9_000)
-                    ensureTransit()
-                }
-            }
         }
     }
 
@@ -922,11 +950,10 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             delay(250)
             val keys = neededTiles
             val tiles = keys.mapNotNull { tileCache[it] }
-            if (tiles.isEmpty()) return@launch
             shownTiles = keys.filter { it in tileCache }.toSet()
             val zoom = lastViewport?.second ?: 12.0
             // Stops and line badges only show close in; leave them out further away.
-            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0) }
+            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0, spread = zoom >= 10.5) }
             transitData = data
             transitPills = if (zoom >= 10.5) data.routes.map { it.info } else emptyList()
             transitLines = data.lines
