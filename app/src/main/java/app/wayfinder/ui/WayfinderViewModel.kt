@@ -173,12 +173,6 @@ class WayfinderViewModel : ViewModel() {
     val transitVisible: Boolean get() = showTransit && transitAvailable
     val bikeVisible: Boolean get() = showBike && bikeAvailable
 
-    /** Whether the map key sheet is open. */
-    var showKey by mutableStateOf(false)
-        private set
-
-    fun toggleKey() { showKey = !showKey }
-
     private var transitData: TransitData? = null
     private var transitJob: Job? = null
     private var rebuildJob: Job? = null
@@ -377,7 +371,6 @@ class WayfinderViewModel : ViewModel() {
 
     fun directionsTo(place: Place) {
         tappedPlace = null
-        showKey = false
         stops = emptyList()
         segmentModes = emptyList()
         segments = emptyList()
@@ -604,8 +597,7 @@ class WayfinderViewModel : ViewModel() {
             !transitVisible && !bikeVisible -> null
             overlayError != null -> overlayError
             zoom != null && bikeVisible && !transitVisible && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
-            transitVisible && data != null && data.zoomFiltered && legend.none { it.mode == TransitMode.Bus } &&
-                TransitMode.Bus in transitModes -> "Zoom in to see trams and buses"
+            transitVisible && zoom != null && zoom < 11 && TransitMode.Bus in transitModes -> "Zoom in to see buses"
             else -> null
         }
     }
@@ -642,8 +634,9 @@ class WayfinderViewModel : ViewModel() {
                 transitLoading = true
                 try {
                     val bounds = Tiles.bounds(next.z, next.x, next.y)
-                    // Ask for one level more detail than the view, so lines show from further out.
-                    val data = TransitRoutes.loadTile(bounds, (next.z + 2).coerceAtMost(16))
+                    // Ask the server for much more detail than the tile's zoom (it hides metro and trams
+                    // until far in), but keep buses for street-level views only.
+                    val data = TransitRoutes.loadTile(bounds, (next.z + 4).coerceAtMost(15), includeBus = next.z >= 10)
                     tileCache[next] = data
                     tileFailedAt.remove(next)
                     overlayError = null

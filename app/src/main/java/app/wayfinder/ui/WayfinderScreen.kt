@@ -73,7 +73,6 @@ import app.wayfinder.ui.components.PlaceSheet
 import app.wayfinder.ui.components.humanizeCategory
 import app.wayfinder.data.Place
 import app.wayfinder.data.PlaceKind
-import app.wayfinder.ui.components.MapKeySheet
 import app.wayfinder.ui.components.MapToolbar
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
@@ -83,12 +82,11 @@ import app.wayfinder.ui.components.TripCard
 import kotlin.math.roundToInt
 
 /** What the bottom sheet is showing. */
-private enum class SheetMode { None, Place, Trip, Key, Lines, Line }
+private enum class SheetMode { None, Place, Trip, Lines, Line }
 
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
     SheetMode.Trip -> 440.dp
     SheetMode.Place -> 260.dp
-    SheetMode.Key -> 520.dp
     SheetMode.Lines -> 400.dp
     SheetMode.Line -> 380.dp
     SheetMode.None -> 0.dp
@@ -126,7 +124,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     val sheetMode = when {
         vm.tappedPlace != null -> SheetMode.Place
         vm.planning -> SheetMode.Trip
-        vm.showKey -> SheetMode.Key
         vm.transitVisible && picked != null -> SheetMode.Line
         vm.transitVisible -> SheetMode.Lines
         else -> SheetMode.None
@@ -256,7 +253,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                             )
                         },
                     )
-                    SheetMode.Key -> MapKeySheet(palette, onClose = vm::toggleKey)
                     SheetMode.Lines -> LinesSheet(
                         lines = vm.legend,
                         modes = vm.transitModes,
@@ -387,8 +383,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     hasLocation = vm.myLocation != null,
                     onLines = { syncViewport(); vm.toggleTransit() },
                     onBikes = { syncViewport(); vm.toggleBike() },
-                    keyOn = vm.showKey,
-                    onKey = vm::toggleKey,
                     onLocate = {
                         val loc = vm.myLocation
                         when {
@@ -421,7 +415,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
     BackHandler(enabled = vm.searchTarget != null) { vm.closeSearch() }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace != null) { vm.closePlace() }
-    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.showKey && !vm.planning) { vm.toggleKey() }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
 }

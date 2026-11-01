@@ -124,6 +124,12 @@ object MapStyle {
         // ---------- Base ----------
         add(layer("background", "background", paint = obj("background-color" to p.land)))
 
+        // Land elevation tint (hypsometric), from the terrain tiles; water areas stay clear.
+        add(layer("elevation-tint", "color-relief", source = "dem", maxzoom = 15.0, paint = obj(
+            "color-relief-color" to elevationScale(p.dark),
+            "color-relief-opacity" to zoomLinear(3 to 1.0, 12 to 0.8, 15 to 0.4),
+        )))
+
         add(fill("landuse-residential", "landuse",
             arr("match", get("class"), arr("residential", "suburb", "neighbourhood"), true, false),
             p.residential, opacity = zoomLinear(10 to 0.0, 12 to 1.0)))
@@ -171,10 +177,39 @@ object MapStyle {
         add(layer("water", "fill", "water",
             filter = arr("!=", get("brunnel"), "tunnel"),
             paint = obj("fill-color" to p.water, "fill-antialias" to true)))
+        // Sea depth (bathymetry) over the water fill: deeper water reads darker.
+        add(layer("depth-tint", "color-relief", source = "dem", paint = obj(
+            "color-relief-color" to depthScale(p.dark),
+            "color-relief-opacity" to 1.0,
+        )))
         add(layer("water-shore", "line", "water", minzoom = 12.0,
             filter = arr("!=", get("brunnel"), "tunnel"),
             paint = obj("line-color" to p.waterLine, "line-width" to zoomLinear(12 to 0.5, 18 to 2.0),
                 "line-blur" to 1.0)))
+
+        // Ferry routes from OpenStreetMap — always on, so crossings show even where no
+        // timetable data exists.
+        val ferryColor = if (p.dark) "#5FC0F0" else "#0068A8"
+        add(layer("ferry-route", "line", "transportation", minzoom = 4.0,
+            filter = eq("class", "ferry"),
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj(
+                "line-color" to ferryColor,
+                "line-opacity" to zoomLinear(4 to 0.5, 9 to 0.85),
+                "line-width" to zoomLinear(4 to 0.8, 10 to 1.6, 16 to 3.0),
+                "line-dasharray" to arr("literal", arr(3.0, 2.5)),
+            )))
+        add(layer("ferry-label", "symbol", "transportation_name", minzoom = 9.0,
+            filter = eq("class", "ferry"),
+            layout = obj(
+                "symbol-placement" to "line",
+                "symbol-spacing" to 400,
+                "text-field" to nameField(),
+                "text-font" to fonts(MEDIUM),
+                "text-size" to 11,
+                "text-max-angle" to 30,
+            ),
+            paint = textPaint(ferryColor, p)))
 
         add(layer("aeroway-area", "fill", "aeroway", minzoom = 11.0,
             filter = arr("match", arr("geometry-type"), arr("Polygon", "MultiPolygon"), true, false),
@@ -800,6 +835,49 @@ object MapStyle {
         "bus_station", "station-bus",
         "ferry_terminal", "station-ferry",
         arr("match", get("class"), "bus", "station-bus", "ferry_terminal", "station-ferry", "station-train"))
+
+    // ---------- Terrain colour scales ----------
+
+    /** Land: transparent at sea level, then green lowlands → tan hills → brown → snowy peaks. */
+    private fun elevationScale(dark: Boolean): JSONArray = if (dark) arr(
+        "interpolate", arr("linear"), arr("elevation"),
+        0, "rgba(0,0,0,0)",
+        1, "rgba(60,95,60,0.10)",
+        300, "rgba(80,110,70,0.16)",
+        800, "rgba(110,110,80,0.20)",
+        1500, "rgba(120,100,80,0.24)",
+        2500, "rgba(130,120,115,0.28)",
+        4000, "rgba(190,195,205,0.32)",
+    ) else arr(
+        "interpolate", arr("linear"), arr("elevation"),
+        0, "rgba(255,255,255,0)",
+        1, "rgba(170,210,150,0.10)",
+        200, "rgba(195,215,155,0.20)",
+        600, "rgba(220,212,165,0.28)",
+        1200, "rgba(210,185,145,0.34)",
+        2000, "rgba(185,155,125,0.38)",
+        3000, "rgba(200,192,186,0.40)",
+        4500, "rgba(248,248,252,0.55)",
+    )
+
+    /** Sea: transparent at the shore, then progressively deeper blues. */
+    private fun depthScale(dark: Boolean): JSONArray = if (dark) arr(
+        "interpolate", arr("linear"), arr("elevation"),
+        -8000, "rgba(2,10,25,0.80)",
+        -4000, "rgba(4,18,38,0.70)",
+        -1000, "rgba(8,30,55,0.55)",
+        -200, "rgba(14,45,75,0.40)",
+        -50, "rgba(20,60,95,0.20)",
+        0, "rgba(0,0,0,0)",
+    ) else arr(
+        "interpolate", arr("linear"), arr("elevation"),
+        -8000, "rgba(18,52,115,0.80)",
+        -4000, "rgba(32,82,160,0.68)",
+        -1000, "rgba(58,122,198,0.55)",
+        -200, "rgba(92,160,224,0.42)",
+        -50, "rgba(140,195,240,0.22)",
+        0, "rgba(163,208,242,0)",
+    )
 
     // ---------- JSON helpers ----------
 

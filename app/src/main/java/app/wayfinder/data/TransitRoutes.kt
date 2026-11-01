@@ -72,8 +72,11 @@ object TransitRoutes {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** Loads one tile; [zoom] is the detail level asked of the server. */
-    suspend fun loadTile(area: Bounds, zoom: Int): TileData {
+    /**
+     * Loads one tile; [zoom] is the detail level asked of the server. Buses are dropped when
+     * [includeBus] is false so zoomed-out views stay readable while metro and trams still show.
+     */
+    suspend fun loadTile(area: Bounds, zoom: Int, includeBus: Boolean): TileData {
         val url = URL.toHttpUrl().newBuilder()
             .addQueryParameter("zoom", zoom.toString())
             .addQueryParameter("min", String.format(Locale.US, "%.6f,%.6f", area.south, area.west))
@@ -86,7 +89,7 @@ object TransitRoutes {
                 call.execute().use { response ->
                     if (!response.isSuccessful) throw HttpException(response.code, "HTTP ${response.code}")
                     val body = response.body ?: throw HttpException(response.code, "empty response")
-                    parse(body.charStream(), zoom.toDouble())
+                    parse(body.charStream(), zoom.toDouble(), includeBus)
                 }
             } finally {
                 handle?.dispose()
@@ -114,7 +117,7 @@ object TransitRoutes {
         var zoomFiltered = false
     }
 
-    fun parse(reader: Reader, zoom: Double): TileData {
+    fun parse(reader: Reader, zoom: Double, includeBus: Boolean = true): TileData {
         val raw = Raw()
         val tolerance = ((360.0 / (256.0 * 2.0.pow(zoom))) / 3.0).toFloat()
         JsonReader(reader).use { r ->
@@ -130,7 +133,7 @@ object TransitRoutes {
             }
             r.endObject()
         }
-        return build(raw)
+        return build(raw, includeBus)
     }
 
     private fun readRoutes(r: JsonReader, raw: Raw) {
@@ -257,8 +260,10 @@ object TransitRoutes {
         else -> TransitMode.Train to "train" // RAIL, SUBURBAN, REGIONAL_RAIL, HIGHSPEED_RAIL, …
     }
 
-    private fun build(raw: Raw): TileData {
-        val ordered = raw.routes.sortedByDescending { Palette.rank(classify(it.mode).second, "") }
+    private fun build(raw: Raw, includeBus: Boolean): TileData {
+        val ordered = raw.routes
+            .filter { includeBus || classify(it.mode).first != TransitMode.Bus }
+            .sortedByDescending { Palette.rank(classify(it.mode).second, "") }
         val out = ArrayList<TileRoute>()
         for (route in ordered.take(MAX_ROUTES)) {
             val (mode, osmRoute) = classify(route.mode)
