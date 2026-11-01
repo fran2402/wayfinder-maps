@@ -67,6 +67,25 @@ class MapController(private val context: Context) {
     data class BaseLayers(val ferries: Boolean, val terrain: Boolean, val relief: Boolean)
     private var baseLayers = BaseLayers(ferries = false, terrain = true, relief = true)
 
+    private var linesMinZoom = 4f
+    /** Each network layer's own minimum zoom from the style, before the user setting. */
+    private val styleMinZoom = HashMap<String, Float>()
+
+    /** Transit lines show from [zoom] up (each layer keeps its own higher minimum). */
+    fun setLinesMinZoom(zoom: Float) {
+        linesMinZoom = zoom
+        applyLinesMinZoom()
+    }
+
+    private fun applyLinesMinZoom() {
+        val s = style ?: return
+        MapStyle.networkLayers.forEach { id ->
+            val layer = s.getLayer(id) ?: return@forEach
+            val own = styleMinZoom.getOrPut(id) { layer.minZoom }
+            layer.minZoom = maxOf(own, linesMinZoom)
+        }
+    }
+
     fun setBaseLayers(layers: BaseLayers) {
         baseLayers = layers
         applyBaseLayers()
@@ -110,7 +129,9 @@ class MapController(private val context: Context) {
         map.setStyle(Style.Builder().fromJson(MapStyle.build(palette, networkVisible, bikeVisible))) { loaded ->
             style = loaded
             pillsInStyle.clear()
+            styleMinZoom.clear()
             applyBaseLayers()
+            applyLinesMinZoom()
             MapIcons.install(context, loaded, palette)
             setNetworkVisible(networkVisible)
             setBikeVisible(bikeVisible)

@@ -69,6 +69,89 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     fun setRelief(on: Boolean) { showRelief = on; prefs.edit().putBoolean("relief", on).apply() }
     fun toggleSettings() { settingsOpen = !settingsOpen }
 
+    /** Transit lines are drawn (and loaded) from this zoom level up. */
+    var minLineZoom by mutableStateOf(prefs.getFloat("minLineZoom", 4f))
+        private set
+
+    fun setMinLineZoom(z: Float) {
+        minLineZoom = z
+        prefs.edit().putFloat("minLineZoom", z).apply()
+        ensureTransit()
+    }
+
+    // ---------- Offline transit data ----------
+    private val offline = app.wayfinder.data.OfflineTransit(app)
+    var savedRegions by mutableStateOf(offline.saved())
+        private set
+
+    data class DownloadState(val region: app.wayfinder.data.OfflineTransit.Region, val done: Int, val total: Int, val failed: Int = 0)
+    var download by mutableStateOf<DownloadState?>(null)
+        private set
+    private var downloadJob: Job? = null
+
+    fun tileCount(region: app.wayfinder.data.OfflineTransit.Region) = offline.tilesOf(region).size
+
+    fun visibleAreaRegion(): app.wayfinder.data.OfflineTransit.Region? =
+        lastViewport?.first?.let { app.wayfinder.data.OfflineTransit.visibleArea(it) }
+
+    /**
+     * Downloads a region tile by tile: one request at a time with a short pause (Transitous is
+     * volunteer-run), retries, and resumes where it stopped.
+     */
+    fun downloadRegion(region: app.wayfinder.data.OfflineTransit.Region) {
+        if (downloadJob?.isActive == true) return
+        val tiles = offline.tilesOf(region)
+        offline.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offline.bytesOf(region), complete = false))
+        savedRegions = offline.saved()
+        download = DownloadState(region, 0, tiles.size)
+        downloadJob = viewModelScope.launch {
+            var done = 0
+            var failed = 0
+            try {
+                for ((level, x, y) in tiles) {
+                    if (!offline.has(level, x, y)) {
+                        var attempt = 0
+                        while (true) {
+                            try {
+                                val data = TransitRoutes.loadTile(Tiles.bounds(level.z, x, y), level.serverZoom, level.includeBus)
+                                offline.write(level, x, y, data)
+                                break
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                attempt++
+                                if (attempt >= 3) { failed++; break }
+                                delay(2_000L * attempt)
+                            }
+                        }
+                        delay(200)
+                    }
+                    done++
+                    download = DownloadState(region, done, tiles.size, failed)
+                }
+            } finally {
+                offline.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offline.bytesOf(region), complete = failed == 0 && done == tiles.size))
+                savedRegions = offline.saved()
+                download = null
+                tileCache.clear()
+                shownTiles = emptySet()
+                ensureTransit()
+            }
+        }
+    }
+
+    fun cancelDownload() { downloadJob?.cancel() }
+
+    fun deleteRegion(id: String) {
+        viewModelScope.launch {
+            offline.delete(id)
+            savedRegions = offline.saved()
+            tileCache.clear()
+            shownTiles = emptySet()
+            ensureTransit()
+        }
+    }
+
 
     // ---------- Search ----------
     var searchTarget by mutableStateOf<SearchTarget?>(null)
@@ -197,9 +280,10 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     private var retryJob: Job? = null
 
     /** Transit map tiles: fetched one at a time, cached (LRU), merged for the view. */
-    private data class TKey(val z: Int, val x: Int, val y: Int)
-    private val tileCache = object : LinkedHashMap<TKey, app.wayfinder.data.TileData>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, app.wayfinder.data.TileData>?) = size > 40
+    /** [offline] tiles come from downloaded data (a fixed level), others from the network. */
+    private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false)
+    private val tileCache = object : LinkedHashMap<TKey, app.wayfinder.data.TileData>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, app.wayfinder.data.TileData>?) = size > 220
     }
     private val tileFailedAt = HashMap<TKey, Long>()
     private var neededTiles: List<TKey> = emptyList()
@@ -633,11 +717,31 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
         return out.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(12)
     }
 
+    /** Downloaded tiles covering the view at the level for this zoom, or null to go online. */
+    private fun offlineTilesFor(area: Bounds, zoom: Double): List<TKey>? {
+        if (savedRegions.isEmpty()) return null
+        val level = when {
+            zoom < 8.0 -> app.wayfinder.data.OfflineTransit.Level.Rail
+            zoom < 11.5 -> app.wayfinder.data.OfflineTransit.Level.City
+            else -> app.wayfinder.data.OfflineTransit.Level.Street
+        }
+        val x0 = Tiles.lonToX(area.west, level.z); val x1 = Tiles.lonToX(area.east, level.z)
+        val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 220) return null
+        val keys = ArrayList<TKey>()
+        for (x in x0..x1) for (y in y0..y1) {
+            if (!offline.has(level, x, y)) return null
+            keys += TKey(level.z, x, y, offline = true)
+        }
+        return keys
+    }
+
     /** Loads the tiles the view needs (one at a time, nearest first) and redraws as they arrive. */
     private fun ensureTransit() {
         if (!transitVisible) return
         val (view, zoom) = lastViewport ?: return
-        neededTiles = tilesFor(view.expanded(0.15), zoom)
+        if (zoom < minLineZoom) return
+        neededTiles = offlineTilesFor(view.expanded(0.15), zoom) ?: tilesFor(view.expanded(0.15), zoom)
         val available = neededTiles.filter { it in tileCache }.toSet()
         // Keep the previous lines on screen until at least one tile of the new view is ready.
         if (available.isNotEmpty() && available != shownTiles) rebuildTransit()
@@ -649,6 +753,18 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
                 val next = neededTiles.firstOrNull { key ->
                     key !in tileCache && (tileFailedAt[key]?.let { now - it > 8_000 } ?: true)
                 } ?: break
+                if (next.offline) {
+                    // From disk: fast, no throttling, no error banner.
+                    val level = offline.levelForZ(next.z)
+                    val data = level?.let { offline.read(it, next.x, next.y) }
+                    if (data != null) {
+                        tileCache[next] = data
+                        if (next in neededTiles) rebuildTransit()
+                    } else {
+                        tileFailedAt[next] = now
+                    }
+                    continue
+                }
                 transitLoading = true
                 try {
                     val bounds = Tiles.bounds(next.z, next.x, next.y)

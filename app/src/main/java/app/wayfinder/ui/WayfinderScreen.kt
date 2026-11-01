@@ -88,7 +88,7 @@ private enum class SheetMode { None, Place, Settings, Trip, Lines, Line }
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
     SheetMode.Trip -> 440.dp
     SheetMode.Place -> 260.dp
-    SheetMode.Settings -> 340.dp
+    SheetMode.Settings -> 520.dp
     SheetMode.Lines -> 400.dp
     SheetMode.Line -> 380.dp
     SheetMode.None -> 0.dp
@@ -145,6 +145,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.transitVisible, mapReady) { controller.setNetworkVisible(vm.transitVisible) }
     LaunchedEffect(vm.bikeVisible, mapReady) { controller.setBikeVisible(vm.bikeVisible) }
+    LaunchedEffect(vm.minLineZoom, mapReady) { controller.setLinesMinZoom(vm.minLineZoom) }
     LaunchedEffect(vm.showFerries, vm.showTerrain, vm.showRelief, mapReady) {
         controller.setBaseLayers(MapController.BaseLayers(vm.showFerries, vm.showTerrain, vm.showRelief))
     }
@@ -239,6 +240,16 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         onFerries = vm::setFerries,
                         onTerrain = vm::setTerrain,
                         onRelief = vm::setRelief,
+                        minLineZoom = vm.minLineZoom,
+                        onMinLineZoom = vm::setMinLineZoom,
+                        presets = app.wayfinder.data.OfflineTransit.presets,
+                        saved = vm.savedRegions,
+                        download = vm.download,
+                        tileCount = vm::tileCount,
+                        visibleArea = vm::visibleAreaRegion,
+                        onDownload = vm::downloadRegion,
+                        onCancelDownload = vm::cancelDownload,
+                        onDelete = vm::deleteRegion,
                         onClose = vm::toggleSettings,
                     )
                     SheetMode.Trip -> if (vm.multiStop) MultiTripSheet(

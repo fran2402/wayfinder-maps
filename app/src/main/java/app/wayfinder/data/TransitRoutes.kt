@@ -68,8 +68,8 @@ object TransitRoutes {
     private const val MAX_CHORD_M = 1000.0
 
     private val client = Http.client.newBuilder()
-        .callTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
     /**
