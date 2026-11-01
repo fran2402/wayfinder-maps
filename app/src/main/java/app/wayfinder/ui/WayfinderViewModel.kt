@@ -9,14 +9,22 @@ import app.wayfinder.data.Bounds
 import app.wayfinder.data.Geocoder
 import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
-import app.wayfinder.data.OverlayData
-import app.wayfinder.data.OverlayKind
+import app.wayfinder.data.LineInfo
 import app.wayfinder.data.Overlays
+import app.wayfinder.data.Overpass
+import app.wayfinder.data.RouteStore
+import app.wayfinder.data.Tier
+import app.wayfinder.data.TileId
+import app.wayfinder.data.Tiles
+import app.wayfinder.data.TransitMode
 import app.wayfinder.data.Place
 import app.wayfinder.data.PlaceKind
 import app.wayfinder.data.Router
 import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -71,9 +79,17 @@ class WayfinderViewModel : ViewModel() {
         private set
     var showBike by mutableStateOf(false)
         private set
-    var transit by mutableStateOf<OverlayData?>(null)
+    /** Which kinds of public transport are drawn. */
+    var transitModes by mutableStateOf(TransitMode.entries.toSet())
         private set
-    var bike by mutableStateOf<OverlayData?>(null)
+    var transitLines by mutableStateOf(Overlays.EMPTY)
+        private set
+    var transitStops by mutableStateOf(Overlays.EMPTY)
+        private set
+    var bikeLines by mutableStateOf(Overlays.EMPTY)
+        private set
+    /** Lines in view, for the line-number pills. */
+    var legend by mutableStateOf<List<LineInfo>>(emptyList())
         private set
     var transitLoading by mutableStateOf(false)
         private set
@@ -84,13 +100,19 @@ class WayfinderViewModel : ViewModel() {
     /** Key of the line picked in the line pills, or null for all lines. */
     var highlightedLine by mutableStateOf<String?>(null)
         private set
-    private var transitJob: Job? = null
-    private var bikeJob: Job? = null
+
+    private val transitStore = RouteStore()
+    private val bikeStore = RouteStore()
+    private val loadedTiles = HashSet<TileId>()
+    private val retryAfter = HashMap<Tier, Long>()
+    private var overlayError: String? = null
+    private var loaderJob: Job? = null
+    private var legendJob: Job? = null
     private var lastViewport: Pair<Bounds, Double>? = null
 
-    /** Train mode narrows the public-transport overlay to rail. */
-    val transitKind: OverlayKind
-        get() = if (planning && mode == TravelMode.Train) OverlayKind.Rail else OverlayKind.Transit
+    /** All store access happens on this one thread, so merges and reads never overlap. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val storeThread = Dispatchers.Default.limitedParallelism(1)
 
     // ---------- Search actions ----------
 
@@ -172,10 +194,8 @@ class WayfinderViewModel : ViewModel() {
 
     fun selectMode(m: TravelMode) {
         if (m == mode) return
-        val kindBefore = transitKind
         mode = m
         plan()
-        if (showTransit && transitKind != kindBefore) reloadTransit(force = true)
     }
 
     fun select(index: Int) {
@@ -244,18 +264,19 @@ class WayfinderViewModel : ViewModel() {
 
     fun toggleTransit() {
         showTransit = !showTransit
-        if (showTransit) reloadTransit(force = false) else {
-            transitJob?.cancel(); transitLoading = false; highlightedLine = null
-        }
-        updateHint()
+        if (!showTransit) highlightedLine = null
+        afterOverlayChange()
     }
 
     fun toggleBike() {
         showBike = !showBike
-        if (showBike) reloadBike(force = false) else {
-            bikeJob?.cancel(); bikeLoading = false
-        }
-        updateHint()
+        afterOverlayChange()
+    }
+
+    fun toggleMode(mode: TransitMode) {
+        transitModes = if (mode in transitModes) transitModes - mode else transitModes + mode
+        refreshTransit()
+        ensureLoading()
     }
 
     fun highlight(key: String?) {
@@ -264,71 +285,111 @@ class WayfinderViewModel : ViewModel() {
 
     fun onViewport(bounds: Bounds, zoom: Double) {
         lastViewport = bounds to zoom
-        if (showTransit) reloadTransit(force = false)
-        if (showBike) reloadBike(force = false)
+        if (showTransit) refreshLegend()
+        ensureLoading()
         updateHint()
     }
 
-    private fun updateHint(error: String? = null) {
+    private fun afterOverlayChange() {
+        overlayError = null
+        retryAfter.clear()
+        ensureLoading()
+        updateHint()
+    }
+
+    private fun updateHint() {
         val zoom = lastViewport?.second
         overlayHint = when {
-            error != null -> error
             !showTransit && !showBike -> null
-            zoom != null && zoom < Overlays.MIN_ZOOM ->
-                if (showTransit) "Zoom in to see every line and its number" else "Zoom in to see bike routes"
+            overlayError != null -> overlayError
+            zoom != null && showTransit && zoom < Tier.Rail.minViewZoom -> "Zoom in to see every line"
+            zoom != null && showBike && !showTransit && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
+            zoom != null && showTransit && TransitMode.Bus in transitModes && zoom < Tier.Bus.minViewZoom &&
+                zoom >= Tier.Rail.minViewZoom -> "Zoom in further for bus lines"
             else -> null
         }
     }
 
-    private fun reloadTransit(force: Boolean) {
-        val kind = transitKind
-        transitJob = reload(force, transit, kind, transitJob,
-            setLoading = { transitLoading = it },
-            setData = { data ->
-                if (highlightedLine != null && data.legend.none { it.key == highlightedLine }) highlightedLine = null
-                transit = data
-            },
-            failure = "Couldn't load public transport lines")
-    }
-
-    private fun reloadBike(force: Boolean) {
-        bikeJob = reload(force, bike, OverlayKind.Bike, bikeJob,
-            setLoading = { bikeLoading = it },
-            setData = { bike = it },
-            failure = "Couldn't load bike routes")
-    }
-
-    private fun reload(
-        force: Boolean,
-        current: OverlayData?,
-        kind: OverlayKind,
-        running: Job?,
-        setLoading: (Boolean) -> Unit,
-        setData: (OverlayData) -> Unit,
-        failure: String,
-    ): Job? {
-        val (bounds, zoom) = lastViewport ?: return running
-        if (zoom < Overlays.MIN_ZOOM) return running
-        val detailed = zoom >= Overlays.DETAIL_ZOOM
-        if (!force && current != null && current.kind == kind && current.area.contains(bounds) &&
-            (current.detailed || !detailed)
-        ) return running
-        running?.cancel()
-        var self: Job? = null
-        self = viewModelScope.launch {
-            delay(350)
-            setLoading(true)
-            try {
-                setData(Overlays.load(kind, bounds.expanded(0.3), detailed))
-                updateHint()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                updateHint("$failure (${e.message?.take(60) ?: e.javaClass.simpleName})")
-            } finally {
-                if (coroutineContext[Job] === self) setLoading(false)
-            }
+    private fun tiersNeeded(zoom: Double): List<Tier> = buildList {
+        if (showTransit) {
+            add(Tier.Rail)
+            if (TransitMode.Bus in transitModes) add(Tier.Bus)
         }
-        return self
+        if (showBike) add(Tier.Bike)
+    }.filter { zoom >= it.minViewZoom }
+
+    private fun nextBatch(): Pair<Tier, List<TileId>>? {
+        val (view, zoom) = lastViewport ?: return null
+        val now = System.currentTimeMillis()
+        for (tier in tiersNeeded(zoom)) {
+            if ((retryAfter[tier] ?: 0L) > now) continue
+            val missing = Tiles.covering(tier, view.expanded(0.1)).filter { it !in loadedTiles }
+            if (missing.isNotEmpty()) return tier to missing.take(if (tier == Tier.Bus) 2 else 4)
+        }
+        return null
+    }
+
+    /**
+     * Loads missing tiles one request at a time. Requests are never cancelled: Overpass keeps
+     * running abandoned queries and limits each client's concurrent queries, so cancelling and
+     * re-requesting on every map move is what kept the old loader spinning forever.
+     */
+    private fun ensureLoading() {
+        if (loaderJob?.isActive == true) return
+        loaderJob = viewModelScope.launch {
+            while (true) {
+                val (tier, tiles) = nextBatch() ?: break
+                if (tier == Tier.Bike) bikeLoading = true else transitLoading = true
+                val area = tiles.map(Tiles::bounds).reduce { a, b ->
+                    Bounds(minOf(a.south, b.south), minOf(a.west, b.west), maxOf(a.north, b.north), maxOf(a.east, b.east))
+                }
+                try {
+                    val json = Overpass.fetch(tier, area)
+                    withContext(storeThread) {
+                        (if (tier == Tier.Bike) bikeStore else transitStore).merge(json, bike = tier == Tier.Bike)
+                    }
+                    loadedTiles += tiles
+                    overlayError = null
+                    if (tier == Tier.Bike) refreshBike() else refreshTransit()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    retryAfter[tier] = System.currentTimeMillis() + 20_000
+                    val what = if (tier == Tier.Bike) "bike routes" else "transit lines"
+                    overlayError = "Couldn't load $what: ${e.message ?: e.javaClass.simpleName}. Move the map to retry."
+                }
+                if (tier == Tier.Bike) bikeLoading = false else transitLoading = false
+                updateHint()
+            }
+            transitLoading = false
+            bikeLoading = false
+        }
+    }
+
+    private fun refreshTransit() {
+        val modes = transitModes
+        viewModelScope.launch {
+            val (lines, stops) = withContext(storeThread) { transitStore.geoJson(modes) }
+            transitLines = lines
+            transitStops = stops
+            refreshLegend()
+        }
+    }
+
+    private fun refreshBike() {
+        viewModelScope.launch {
+            bikeLines = withContext(storeThread) { bikeStore.geoJson(null).first }
+        }
+    }
+
+    private fun refreshLegend() {
+        val view = lastViewport?.first ?: return
+        val modes = transitModes
+        legendJob?.cancel()
+        legendJob = viewModelScope.launch {
+            val lines = withContext(storeThread) { transitStore.legend(modes, view) }
+            legend = lines
+            if (highlightedLine != null && lines.none { it.key == highlightedLine }) highlightedLine = null
+        }
     }
 }

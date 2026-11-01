@@ -6,7 +6,6 @@ import app.wayfinder.data.Bounds
 import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
 import app.wayfinder.data.LegMode
-import app.wayfinder.data.OverlayData
 import app.wayfinder.data.Overlays
 import org.json.JSONArray
 import org.json.JSONObject
@@ -46,8 +45,9 @@ class MapController(private val context: Context) {
     private var styleKey: String? = null
 
     private var route: RouteDrawing? = null
-    private var transit: OverlayData? = null
-    private var bike: OverlayData? = null
+    private var transitLines: String = Overlays.EMPTY
+    private var transitStops: String = Overlays.EMPTY
+    private var bikeLines: String = Overlays.EMPTY
     private var networkVisible = false
     private var bikeVisible = false
     private var highlightedLine: String? = null
@@ -155,21 +155,24 @@ class MapController(private val context: Context) {
 
     // ---------- Overlays ----------
 
-    fun setTransit(data: OverlayData?) {
-        transit = data
-        drawOverlays()
+    fun setTransit(lines: String, stops: String) {
+        transitLines = lines
+        transitStops = stops
+        val s = style ?: return
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(lines)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(stops)
     }
 
-    fun setBike(data: OverlayData?) {
-        bike = data
-        drawOverlays()
+    fun setBike(lines: String) {
+        bikeLines = lines
+        style?.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(lines)
     }
 
     private fun drawOverlays() {
         val s = style ?: return
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transit?.lines ?: Overlays.EMPTY)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transit?.stops ?: Overlays.EMPTY)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bike?.lines ?: Overlays.EMPTY)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transitLines)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transitStops)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bikeLines)
     }
 
     fun setNetworkVisible(show: Boolean) {

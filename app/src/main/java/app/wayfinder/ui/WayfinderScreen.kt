@@ -66,6 +66,7 @@ import app.wayfinder.map.MapPalette
 import app.wayfinder.map.RouteDrawing
 import app.wayfinder.ui.components.LinePills
 import app.wayfinder.ui.components.MapHost
+import app.wayfinder.ui.components.ModeChips
 import app.wayfinder.ui.components.OverlayPills
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
@@ -115,9 +116,9 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.showTransit, mapReady) { controller.setNetworkVisible(vm.showTransit) }
     LaunchedEffect(vm.showBike, mapReady) { controller.setBikeVisible(vm.showBike) }
-    LaunchedEffect(vm.transit, mapReady) { controller.setTransit(vm.transit) }
-    LaunchedEffect(vm.bike, mapReady) { controller.setBike(vm.bike) }
-    LaunchedEffect(vm.highlightedLine, vm.transit, mapReady) { controller.highlightLine(vm.highlightedLine) }
+    LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) { controller.setTransit(vm.transitLines, vm.transitStops) }
+    LaunchedEffect(vm.bikeLines, mapReady) { controller.setBike(vm.bikeLines) }
+    LaunchedEffect(vm.highlightedLine, vm.transitLines, mapReady) { controller.highlightLine(vm.highlightedLine) }
 
     // Make sure overlays know the current viewport even before the first camera move ends.
     fun syncViewport() {
@@ -253,7 +254,14 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     onBike = { syncViewport(); vm.toggleBike() },
                 )
               }
-                val lines = vm.transit?.legend.orEmpty()
+                AnimatedVisibility(
+                    visible = vm.showTransit,
+                    enter = fadeIn() + slideInVertically { -it / 2 },
+                    exit = fadeOut(),
+                ) {
+                    ModeChips(enabled = vm.transitModes, onToggle = vm::toggleMode)
+                }
+                val lines = vm.legend
                 AnimatedVisibility(
                     visible = vm.showTransit && lines.isNotEmpty(),
                     enter = fadeIn() + slideInVertically { -it / 2 },
