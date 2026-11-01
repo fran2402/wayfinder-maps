@@ -358,7 +358,7 @@ class MapController(private val context: Context) {
                 TransitMode.Metro -> listOf("subway", "light_rail", "monorail")
                 TransitMode.Tram -> listOf("tram")
                 TransitMode.Other -> listOf("funicular")
-                TransitMode.Bus, TransitMode.Ferry -> emptyList()
+                TransitMode.Bus, TransitMode.Coach, TransitMode.Ferry -> emptyList()
             }
         })
         val tiles = if (subclasses.length() == 0 || key != null) none else

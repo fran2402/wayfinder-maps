@@ -324,7 +324,7 @@ object MapStyle {
         //   Train: railway (white dashed centre) · Metro: boldest solid · Tram: double track
         //   Bus: thin solid · Ferry: long dashes · Cable car / funicular: dots
         fun byMode(train: Double, metro: Double, tram: Double, bus: Double, other: Double) =
-            arr("match", get("mode"), "Train", train, "Metro", metro, "Tram", tram, "Bus", bus, other)
+            arr("match", get("mode"), "Train", train, "Metro", metro, "Tram", tram, arr("Bus", "Coach"), bus, other)
         val lineWidth = arr("interpolate", arr("linear"), arr("zoom"),
             9, byMode(2.4, 2.8, 2.0, 1.1, 1.6),
             13, byMode(5.0, 5.8, 4.2, 2.6, 3.0),
@@ -336,8 +336,9 @@ object MapStyle {
         val solidModes = arr("match", get("mode"), arr("Ferry", "Other"), false, true)
         // Lines sharing a street sit side by side: "off" is the line's slot across the street.
         fun slot(px: Double) = arr("*", arr("coalesce", get("off"), 0), px)
+        // Only computed when zoomed in very close (see TransitRoutes.merge); elsewhere lines overlap.
         val lineOffset = arr("interpolate", arr("linear"), arr("zoom"),
-            10, slot(2.4), 13, slot(4.6), 16, slot(7.0), 18, slot(10.0))
+            15, slot(5.5), 16, slot(7.0), 18, slot(10.0))
         add(layer("net-lines-casing", "line", source = SRC_NETWORK, visibility = netVis,
             filter = solidModes,
             layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
@@ -505,7 +506,7 @@ object MapStyle {
                 "circle-stroke-color" to get("color"),
                 "circle-stroke-width" to zoomLinear(12 to 1.2, 16 to 2.2),
             )))
-        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 11.0, visibility = netVis,
+        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 14.0, visibility = netVis,
             filter = arr("has", "pill"),
             layout = obj(
                 "symbol-placement" to "line",
@@ -902,7 +903,8 @@ object MapStyle {
 
     // ---------- JSON helpers ----------
 
-    private fun nameField() = arr("coalesce", get("name"), get("name_en"), get("name:latin"))
+    /** English names wherever OpenStreetMap has them, then the Latin-script name, then the local one. */
+    private fun nameField() = arr("coalesce", get("name:en"), get("name_en"), get("name:latin"), get("name"))
     private fun fonts(vararg f: String) = arr("literal", JSONArray(f.toList()))
 
     private fun textPaint(color: String, p: MapPalette, haloWidth: Double = 1.4) = obj(

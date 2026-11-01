@@ -8,5 +8,6 @@ class WayfinderApplication : Application() {
         super.onCreate()
         CrashReporter.install(this)
         MapLibre.getInstance(this)
+        Downloader.init(this)
     }
 }

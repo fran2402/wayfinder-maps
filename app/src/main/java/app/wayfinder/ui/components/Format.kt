@@ -10,7 +10,6 @@ import app.wayfinder.ui.Ph
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -28,7 +27,8 @@ fun formatDistance(meters: Double): String = when {
     else -> "${(meters / 1000).roundToInt()} km"
 }
 
-private val timeFormat = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+/** Always the 24-hour clock. */
+private val timeFormat = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
 
 fun formatTime(ms: Long?): String = ms?.let { timeFormat.format(Instant.ofEpochMilli(it)) } ?: ""
 

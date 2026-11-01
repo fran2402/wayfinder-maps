@@ -8,6 +8,9 @@ import com.adamglin.phosphoricons.Regular
 import com.adamglin.phosphoricons.regular.MagnifyingGlass as RMagnifyingGlass
 import com.adamglin.phosphoricons.regular.ArrowLeft as RArrowLeft
 import com.adamglin.phosphoricons.regular.X as RX
+import com.adamglin.phosphoricons.regular.DownloadSimple as RDownloadSimple
+import com.adamglin.phosphoricons.regular.GearSix as RGearSix
+import com.adamglin.phosphoricons.regular.Trash as RTrash
 import com.adamglin.phosphoricons.regular.ArrowsDownUp as RArrowsDownUp
 import com.adamglin.phosphoricons.regular.Crosshair as RCrosshair
 import com.adamglin.phosphoricons.regular.MapPin as RMapPin
@@ -111,6 +114,9 @@ object Ph {
     val Circle: ImageVector get() = PhosphorIcons.Regular.RCircle
     val Signpost: ImageVector get() = PhosphorIcons.Regular.RSignpost
     val ArrowClockwise: ImageVector get() = PhosphorIcons.Regular.RArrowClockwise
+    val DownloadSimple: ImageVector get() = PhosphorIcons.Regular.RDownloadSimple
+    val GearSix: ImageVector get() = PhosphorIcons.Regular.RGearSix
+    val Trash: ImageVector get() = PhosphorIcons.Regular.RTrash
 
     object Filled {
         val NavigationArrow: ImageVector get() = PhosphorIcons.Fill.FNavigationArrow

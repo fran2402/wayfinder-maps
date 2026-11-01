@@ -63,8 +63,19 @@ class MainActivity : ComponentActivity() {
                     if (!granted) launcher.launch(permissions)
                 }
 
+                // Download progress shows as a notification while the app is in the background.
+                val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
                 LocationUpdates(enabled = vm.hasLocationPermission, onLocation = vm::onLocation)
-                WayfinderScreen(vm = vm, requestLocationPermission = { launcher.launch(permissions) })
+                WayfinderScreen(
+                    vm = vm,
+                    requestLocationPermission = { launcher.launch(permissions) },
+                    requestNotificationPermission = {
+                        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                            ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        ) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
+                )
                 CrashDialog()
             }
         }

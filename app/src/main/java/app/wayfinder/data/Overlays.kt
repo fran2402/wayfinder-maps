@@ -43,6 +43,8 @@ enum class TransitMode(val label: String, val colorArgb: Int) {
     Metro("Metro", 0xFF1E63E9.toInt()),
     Tram("Trams", 0xFFE8473F.toInt()),
     Bus("Buses", 0xFF7E57C2.toInt()),
+    /** Intercity and commercial coaches (FlixBus, Arriva, …), apart from local public buses. */
+    Coach("Coaches", 0xFFE07A1F.toInt()),
     Ferry("Ferries", 0xFF0068A8.toInt()),
     Other("Other", 0xFFB0761E.toInt());
 

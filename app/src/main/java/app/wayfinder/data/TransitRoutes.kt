@@ -114,6 +114,8 @@ object TransitRoutes {
         /** "NONE" means the server has no real shape and joins stops with straight lines. */
         val pathSource: String,
         val routeIdx: Int,
+        /** Feed-prefixed GTFS route id: tells which operator/feed the route comes from. */
+        val routeId: String,
     )
 
     private class Raw {
@@ -154,6 +156,7 @@ object TransitRoutes {
             var segments = IntArray(0)
             var pathSource = ""
             var routeIdx = -1
+            var routeId = ""
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
@@ -167,6 +170,7 @@ object TransitRoutes {
                             while (r.hasNext()) {
                                 when (r.nextName()) {
                                     "shortName" -> r.nextStringOrEmpty().trim().let { if (ref.isEmpty()) ref = it }
+                                    "id" -> r.nextStringOrEmpty().let { if (routeId.isEmpty()) routeId = it }
                                     "longName" -> r.nextStringOrEmpty().trim().let { if (name.isEmpty()) name = it }
                                     "color" -> parseHex(r.nextStringOrEmpty()).let { if (color == null) color = it }
                                     "textColor" -> parseHex(r.nextStringOrEmpty()).let { if (text == null) text = it }
@@ -203,7 +207,7 @@ object TransitRoutes {
                 }
             }
             r.endObject()
-            raw.routes += RawRoute(mode, ref, name, color, text, segments, pathSource, routeIdx)
+            raw.routes += RawRoute(mode, ref, name, color, text, segments, pathSource, routeIdx, routeId)
         }
         r.endArray()
     }
@@ -232,10 +236,8 @@ object TransitRoutes {
             r.endObject()
             raw.polylines += points?.takeIf { it.isNotEmpty() }?.let {
                 runCatching {
-                    val pts = decodeFloats(it, precision)
-                    // A long two-point segment is a stop-to-stop chord (no real shape): drop it.
-                    if (pts.size == 4 && metres(pts[0], pts[1], pts[2], pts[3]) > MAX_CHORD_M) null
-                    else simplify(pts, tolerance)
+                    // Chords (long two-point segments) are judged per mode when routes are built.
+                    simplify(decodeFloats(it, precision), tolerance)
                 }.getOrNull()
             }
         }
@@ -271,15 +273,28 @@ object TransitRoutes {
         else -> TransitMode.Train to "train" // RAIL, SUBURBAN, REGIONAL_RAIL, HIGHSPEED_RAIL, …
     }
 
+    private val COACH_OPERATORS = Regex(
+        "flix|blablacar|eurolines|regiojet|arriva|megabus|national.?express|alsa|nomago|ouibus|ecolines|" +
+            "student.?agency|leo.?express|itabus|vy.?buss|nettbuss|swebus|onnibus|matkahuolto|postbus.?(?:de|at)?\\b|" +
+            "intercity.?bus|fernbus|greyhound|ourbus|peter.?pan|coach",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Intercity or commercial coach rather than a local public bus. */
+    private fun isCoach(r: RawRoute): Boolean =
+        r.mode == "COACH" || COACH_OPERATORS.containsMatchIn(r.routeId) || COACH_OPERATORS.containsMatchIn(r.name)
+
     private fun build(raw: Raw, includeBus: Boolean, maxRoutes: Int): TileData {
         val ordered = raw.routes
-            // Routes without real shapes would be drawn as straight chords between stops.
-            .filter { it.pathSource != "NONE" }
+            // Routes without real shapes would be drawn as straight chords between stops; every
+            // train (and ferry) is kept anyway, as station-to-station lines are close enough.
+            .filter { it.pathSource != "NONE" || classify(it.mode).first.let { m -> m == TransitMode.Train || m == TransitMode.Ferry } }
             .filter { includeBus || classify(it.mode).first != TransitMode.Bus }
             .sortedByDescending { Palette.rank(classify(it.mode).second, "") }
         val out = ArrayList<TileRoute>()
         for (route in ordered.take(maxRoutes)) {
-            val (mode, osmRoute) = classify(route.mode)
+            val (baseMode, osmRoute) = classify(route.mode)
+            val mode = if (baseMode == TransitMode.Bus && isCoach(route)) TransitMode.Coach else baseMode
             val ref = route.ref.takeIf { it.length <= 10 } ?: ""
             val color = route.color ?: mode.colorArgb
             val text = route.text?.takeIf { it != color }
@@ -299,6 +314,9 @@ object TransitRoutes {
                 raw.stops.getOrNull(to)?.let { if (stops.lastOrNull()?.id != it.id) stops += it }
                 val pts = raw.polylines.getOrNull(pi) ?: continue
                 if (pts.size < 4 || !used.add(pi)) continue
+                // A long two-point segment is a stop-to-stop chord, not a road: drop it (rail keeps it).
+                val railLike = mode == TransitMode.Train || mode == TransitMode.Ferry
+                if (!railLike && pts.size == 4 && metres(pts[0], pts[1], pts[2], pts[3]) > MAX_CHORD_M) continue
                 // A shape far longer than the stop-to-stop distance is a routing glitch (the
                 // "fans" of lines that all detour to one wrong point): leave it out.
                 val a = raw.stops.getOrNull(from); val b = raw.stops.getOrNull(to)
@@ -431,6 +449,7 @@ object TransitRoutes {
     fun cutLongEdges(pts: FloatArray, mode: TransitMode, toleranceM: Double): List<FloatArray> {
         val base = when (mode) {
             TransitMode.Bus -> 1_500.0
+            TransitMode.Coach -> 6_000.0
             TransitMode.Tram -> 1_200.0
             TransitMode.Metro -> 3_000.0
             TransitMode.Other -> 2_500.0

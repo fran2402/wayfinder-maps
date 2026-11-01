@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.wayfinder.Downloader
 import app.wayfinder.data.Bounds
 import app.wayfinder.data.Departure
 import app.wayfinder.data.Departures
@@ -61,6 +62,8 @@ data class TripSegment(
 /** A place the user tapped on the map (restaurant, shop, station…). */
 data class PlaceDetail(val place: Place, val category: String?, val poiClass: String?)
 
+typealias DownloadState = Downloader.State
+
 class WayfinderViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- Map settings (persisted) ----------
@@ -77,7 +80,21 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     fun setFerries(on: Boolean) { showFerries = on; prefs.edit().putBoolean("ferries", on).apply() }
     fun setTerrain(on: Boolean) { showTerrain = on; prefs.edit().putBoolean("terrain", on).apply() }
     fun setRelief(on: Boolean) { showRelief = on; prefs.edit().putBoolean("relief", on).apply() }
+    /** The layers sheet (it holds what used to be the settings sheet). */
     fun toggleSettings() { settingsOpen = !settingsOpen }
+
+    enum class Page { None, Offline, Settings }
+    /** A full-screen page over the map. */
+    var page by mutableStateOf(Page.None)
+        private set
+    fun openPage(p: Page) {
+        page = p
+        if (p == Page.Offline) refreshStorage()
+    }
+    fun toggleTerrain() {
+        val on = !(showTerrain || showRelief)
+        setTerrain(on); setRelief(on)
+    }
 
     /** Transit lines are drawn (and loaded) from this zoom level up. */
     var minLineZoom by mutableStateOf(prefs.getFloat("minLineZoom", 4f))
@@ -95,129 +112,76 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         private set
 
     // ---------- Offline transit data ----------
-    private val offlineStore: OfflineTransit = OfflineTransit(application)
+    private val offlineStore: OfflineTransit = Downloader.store
     var savedRegions by mutableStateOf(offlineStore.saved())
         private set
 
-    data class DownloadState(
-        val region: OfflineTransit.Region,
-        val done: Int,
-        val total: Int,
-        val failed: Int = 0,
-        /** The last thing that went wrong, shown under the progress bar. */
-        val problem: String? = null,
-        val retrying: Boolean = false,
-        /** Building the zoomed-out tiles from what was downloaded. */
-        val finishing: Boolean = false,
-        /** Bike routes run in their own, slower queue (Overpass allows few requests at once). */
-        val bikesDone: Int = 0,
-    )
-    var download by mutableStateOf<DownloadState?>(null)
+    var download by mutableStateOf<DownloadState?>(Downloader.state.value)
         private set
-    private var downloadJob: Job? = null
+
+    /** Squares saved while browsing (outside any saved region), with their size. */
+    var browsing by mutableStateOf(0 to 0L)
+        private set
+
+    /** Bytes of all saved lines and bike routes, and free space on the phone. */
+    var storage by mutableStateOf(0L to 0L)
+        private set
+
+    init {
+        viewModelScope.launch { Downloader.state.collect { download = it } }
+        viewModelScope.launch { Downloader.arrived.collect { unitArrived(it) } }
+        viewModelScope.launch {
+            Downloader.finished.collect {
+                savedRegions = offlineStore.saved()
+                tileCache.clear()
+                shownTiles = emptySet()
+                ensureTransit()
+                refreshStorage()
+            }
+        }
+        refreshStorage()
+    }
+
+    fun refreshStorage() {
+        viewModelScope.launch {
+            browsing = offlineStore.browsingStats()
+            storage = offlineStore.totalBytes() to offlineStore.freeBytes()
+        }
+    }
+
+    fun clearBrowsing() {
+        viewModelScope.launch {
+            offlineStore.clearBrowsing()
+            tileCache.clear()
+            shownTiles = emptySet()
+            ensureTransit()
+            refreshStorage()
+        }
+    }
+
+    /** The map's visible area, last reported. */
+    val viewBounds: Bounds? get() = lastViewport?.first
 
     fun tileCount(region: OfflineTransit.Region) = offlineStore.unitsOf(region).size
 
     fun visibleAreaRegion(): OfflineTransit.Region? =
         lastViewport?.first?.let { OfflineTransit.visibleArea(it) }
 
-    /**
-     * Downloads a region square by square, several at once, with every mode at full detail;
-     * then builds the zoomed-out tiles on the phone. Resumes where it stopped.
-     */
+    /** Starts (or resumes, or for a finished region refreshes) a download that keeps going in the background. */
     fun downloadRegion(region: OfflineTransit.Region) {
-        if (downloadJob?.isActive == true) return
-        val units = offlineStore.unitsOf(region)
-        // "Update" on a finished region fetches everything again; otherwise resume.
         val refresh = savedRegions.any { it.region.id == region.id && it.complete }
-        download = DownloadState(region, 0, units.size)
-        downloadJob = viewModelScope.launch {
-            offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = false))
-            savedRegions = offlineStore.saved()
-            var done = 0
-            var failed = 0
-            var bikesDone = 0
-            var bikesFailed = 0
-            var problem: String? = null
-            var retrying = false
-            var finishing = false
-            fun publish() {
-                download = DownloadState(region, done, units.size, failed, problem, retrying, finishing, bikesDone)
-            }
-            suspend fun attempt(block: suspend () -> Unit): Boolean = try {
-                block(); true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                problem = e.message?.take(60) ?: e.javaClass.simpleName
-                false
-            }
-            suspend fun runAll(list: List<Pair<Int, Int>>, workers: Int, work: suspend (Pair<Int, Int>) -> Unit) {
-                val queue = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
-                list.forEach { queue.trySend(it) }
-                queue.close()
-                coroutineScope { repeat(workers) { launch { for (u in queue) work(u) } } }
-            }
-            val center = lastViewport?.first?.let { Tiles.lonToX((it.west + it.east) / 2, 8) to Tiles.latToY((it.south + it.north) / 2, 8) }
-            fun nearFirst(list: List<Pair<Int, Int>>) = if (center == null) list else list.sortedBy {
-                val dx = it.first - center.first; val dy = it.second - center.second; dx * dx + dy * dy
-            }
-            var complete = false
-            try {
-                coroutineScope {
-                    // Bike routes: their own queue, so slow Overpass never holds up the lines.
-                    val bikes = launch {
-                        val todo = units.filter { refresh || !offlineStore.hasBike(it.first, it.second) }
-                        bikesDone = units.size - todo.size
-                        runAll(nearFirst(todo), workers = 2) { u ->
-                            if (attempt { offlineStore.downloadBike(u.first, u.second, force = refresh) { } }) bikesDone++ else bikesFailed++
-                            publish()
-                        }
-                    }
-                    val todo = units.filter { refresh || !offlineStore.hasLines(it.first, it.second) }
-                    done = units.size - todo.size
-                    publish()
-                    val missed = ArrayList<Pair<Int, Int>>()
-                    runAll(nearFirst(todo), workers = 12) { u ->
-                        val ok = attempt { offlineStore.downloadUnit(u.first, u.second, force = refresh) { problem = it; publish() } }
-                        if (ok) unitArrived(u) else { failed++; missed += u }
-                        done++
-                        if (ok && done % 8 == 0) problem = null
-                        publish()
-                    }
-                    if (missed.isNotEmpty()) {
-                        retrying = true
-                        publish()
-                        delay(5_000)
-                        runAll(missed, workers = 6) { u ->
-                            if (attempt { offlineStore.downloadUnit(u.first, u.second, force = refresh) { } }) { failed--; unitArrived(u); publish() }
-                        }
-                    }
-                    finishing = true
-                    publish()
-                    offlineStore.buildOverview(region)
-                    bikes.join()
-                    complete = failed == 0 && bikesFailed == 0
-                }
-            } finally {
-                withContext(NonCancellable) {
-                    offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = complete))
-                    savedRegions = offlineStore.saved()
-                    download = null
-                    tileCache.clear()
-                    shownTiles = emptySet()
-                    ensureTransit()
-                }
-            }
-        }
+        val center = lastViewport?.first?.let { Tiles.lonToX((it.west + it.east) / 2, 8) to Tiles.latToY((it.south + it.north) / 2, 8) }
+        Downloader.start(getApplication(), region, refresh, center)
+        savedRegions = offlineStore.saved()
     }
 
-    fun cancelDownload() { downloadJob?.cancel() }
+    fun cancelDownload() = Downloader.cancel()
 
     fun deleteRegion(id: String) {
         viewModelScope.launch {
             offlineStore.delete(id)
             savedRegions = offlineStore.saved()
+            refreshStorage()
             tileCache.clear()
             shownTiles = emptySet()
             ensureTransit()
@@ -799,9 +763,17 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         updateHint()
     }
 
+    /** Zoom bands that change what a rebuild produces (stops, line numbers, side-by-side). */
+    private var detailBand = -1
+
     fun onViewport(bounds: Bounds, zoom: Double) {
         lastViewport = bounds to zoom
         linesInZoom = zoom >= minLineZoom
+        val band = when { zoom >= SPREAD_ZOOM -> 3; zoom >= 13.5 -> 2; zoom >= 11.0 -> 1; else -> 0 }
+        if (band != detailBand) {
+            detailBand = band
+            if (shownTiles.isNotEmpty()) rebuildTransit()
+        }
         refreshLegend()
         ensureTransit()
         ensureBike()
@@ -842,6 +814,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         zoom < 11.5 -> OfflineTransit.Level.City
         else -> OfflineTransit.Level.Street
     }
+
+    /** Lines sharing a street are spread side by side only this close in (it costs work). */
+    private val SPREAD_ZOOM = 15.5
 
     /** Below this zoom a view spans too many squares to save on the fly. */
     private val AUTO_SAVE_ZOOM = 7.0
@@ -953,9 +928,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             shownTiles = keys.filter { it in tileCache }.toSet()
             val zoom = lastViewport?.second ?: 12.0
             // Stops and line badges only show close in; leave them out further away.
-            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0, spread = zoom >= 10.5) }
+            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0, spread = zoom >= SPREAD_ZOOM) }
             transitData = data
-            transitPills = if (zoom >= 10.5) data.routes.map { it.info } else emptyList()
+            transitPills = if (zoom >= 13.5) data.routes.map { it.info } else emptyList()
             transitLines = data.lines
             transitStops = data.stops
             refreshLegend()

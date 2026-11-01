@@ -48,9 +48,9 @@ class OfflineTransit(context: Context) {
     private val index = File(dir, "regions.json")
 
     init {
-        // Data from older versions used other levels and left buses out: start afresh.
+        // Older data lacks coaches and some trains: start afresh.
         val marker = File(dir, "format")
-        if (runCatching { marker.readText().trim() }.getOrNull() !in setOf("2", VERSION.toString())) {
+        if (runCatching { marker.readText().trim() }.getOrNull() != VERSION.toString()) {
             dir.listFiles()?.forEach { it.delete() }
             marker.writeText(VERSION.toString())
         }
@@ -103,7 +103,7 @@ class OfflineTransit(context: Context) {
             area = view,
         )
 
-        private const val VERSION = 3
+        private const val VERSION = 4
 
         /** Server zoom for downloads: Transitous includes every mode from zoom 11 up. */
         private const val SERVER_ZOOM = 14
@@ -112,7 +112,10 @@ class OfflineTransit(context: Context) {
         private const val MAX_SPLITS = 6
 
         /** Requests in flight at once, across the whole download. */
-        private const val PARALLEL = 8
+        private const val PARALLEL = 16
+
+        /** Every square starts split into at least 4^this pieces. */
+        private const val MIN_START_DEPTH = 2
     }
 
     // ---------- Tiles ----------
@@ -265,7 +268,9 @@ class OfflineTransit(context: Context) {
                 }
             }
         }
-        val start = learnedDepth.coerceIn(0, 4)
+        // Start small (about 40 km pieces, or smaller where neighbours needed it): small requests
+        // answer quickly and rarely come back "too dense", so no time is lost splitting.
+        val start = learnedDepth.coerceIn(MIN_START_DEPTH, 4)
         coroutineScope {
             split(unit, start).map { piece -> async { fetchArea(piece, start, onProblem, sink) } }.awaitAll()
         }
@@ -424,6 +429,53 @@ class OfflineTransit(context: Context) {
         }
     }
 
+    // ---------- Storage ----------
+
+    private fun regionUnits(): Set<Pair<Int, Int>> = saved().flatMap { unitsOf(it.region) }.toHashSet()
+
+    private fun unitBytes(x: Int, y: Int): Long {
+        val k = 1 shl (Level.Street.z - Level.City.z)
+        var sum = file(Level.City, x, y).length() + bikeFile(x, y).length()
+        for (i in 0 until k) for (j in 0 until k) sum += file(Level.Street, x * k + i, y * k + j).length()
+        return sum
+    }
+
+    private fun browsingUnits(): List<Pair<Int, Int>> {
+        val inRegions = regionUnits()
+        val prefix = "${Level.City.z}_"
+        return present.toList().filter { it.startsWith(prefix) && it.endsWith(".bin") }.mapNotNull { n ->
+            val p = n.removeSuffix(".bin").split('_')
+            if (p.size == 3) p[1].toIntOrNull()?.let { x -> p[2].toIntOrNull()?.let { y -> x to y } } else null
+        }.filter { it !in inRegions }
+    }
+
+    /** Squares saved while browsing (not part of a saved region): how many and their size. */
+    suspend fun browsingStats(): Pair<Int, Long> = withContext(Dispatchers.IO) {
+        val units = browsingUnits()
+        units.size to units.sumOf { (x, y) -> unitBytes(x, y) }
+    }
+
+    /** Deletes squares saved while browsing; saved regions stay. */
+    suspend fun clearBrowsing() = withContext(Dispatchers.IO) {
+        val k = 1 shl (Level.Street.z - Level.City.z)
+        val rails = HashSet<Pair<Int, Int>>()
+        for ((x, y) in browsingUnits()) {
+            fun drop(l: Level, tx: Int, ty: Int) { file(l, tx, ty).delete(); present -= name(l, tx, ty) }
+            drop(Level.City, x, y)
+            for (i in 0 until k) for (j in 0 until k) drop(Level.Street, x * k + i, y * k + j)
+            bikeFile(x, y).delete(); present -= "${bikeName(x, y)}.gz"
+            rails += (x shr 2) to (y shr 2)
+        }
+        for ((x, y) in rails) {
+            file(Level.Rail, x, y).delete(); present -= name(Level.Rail, x, y)
+            rebuildRail(x, y)
+        }
+    }
+
+    suspend fun totalBytes(): Long = withContext(Dispatchers.IO) { dir.listFiles()?.sumOf { it.length() } ?: 0L }
+
+    fun freeBytes(): Long = runCatching { dir.usableSpace }.getOrDefault(0L)
+
     // ---------- Encoding ----------
 
     private fun encode(t: TileData, out: DataOutputStream) {
@@ -451,7 +503,7 @@ class OfflineTransit(context: Context) {
 
     private fun decode(inp: DataInputStream): TileData {
         val version = inp.readInt()
-        require(version == 2 || version == VERSION)
+        require(version == VERSION)
         val zoomFiltered = inp.readBoolean()
         val n = inp.readInt()
         val routes = ArrayList<TileRoute>(n)

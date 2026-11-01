@@ -22,6 +22,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import app.wayfinder.ui.Ph
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonGroupDefaults
@@ -49,7 +53,6 @@ import androidx.compose.ui.unit.dp
 import app.wayfinder.data.LineInfo
 import app.wayfinder.data.LoadedLine
 import app.wayfinder.data.TransitMode
-import app.wayfinder.ui.Ph
 
 /** "Lines nearby": mode filter as a connected button group, then lines wrapped by mode. */
 @Composable
@@ -166,66 +169,111 @@ private fun LinePill(line: LineInfo, onClick: () -> Unit) {
     }
 }
 
-/** One line: badge and name, its next departures, and its stops as a timeline in the line colour. */
+/** One line: badge and name, next departures as chips, and its stops behind "All stops". */
 @Composable
 fun LineSheet(
     line: LoadedLine,
     departures: app.wayfinder.ui.WayfinderViewModel.DepartureBoard?,
     onStop: (app.wayfinder.data.StopRef) -> Unit,
-    onClose: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val info = line.info
     val lineColor = Color(info.color)
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
+    var showStops by androidx.compose.runtime.saveable.rememberSaveable(info.key) { androidx.compose.runtime.mutableStateOf(false) }
     Column(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = maxHeight)
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp, end = 4.dp)) {
-            Surface(shape = RoundedCornerShape(18.dp), color = lineColor, contentColor = Color(info.textColor)) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.defaultMinSize(minWidth = 72.dp).height(56.dp).padding(horizontal = 14.dp),
-                ) {
-                    Text(info.ref, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight(750)), maxLines = 1)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(12.dp), color = lineColor, contentColor = Color(info.textColor)) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.defaultMinSize(minWidth = 44.dp).height(44.dp).padding(horizontal = 10.dp)) {
+                    Text(info.ref.ifBlank { "•" }, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight(750)), maxLines = 1)
                 }
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    info.name.ifBlank { "Line ${info.ref}" },
-                    style = MaterialTheme.typography.titleLarge,
+                    info.name.ifBlank { line.stops.firstOrNull()?.let { a -> line.stops.last().let { b -> "${a.name} – ${b.name}" } } ?: "Line ${info.ref}" },
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight(700)),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                info.mode?.let { mode ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(modeIcon(mode), contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            singular(mode) + if (line.stops.isNotEmpty()) " · ${line.stops.size} stops" else "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            FilledTonalIconButton(onClick = onClose, shapes = IconButtonDefaults.shapes()) {
-                Icon(Ph.X, contentDescription = "Back to all lines", modifier = Modifier.size(20.dp))
+                Text(
+                    listOfNotNull(info.mode?.let(::singular), line.stops.size.takeIf { it > 0 }?.let { "$it stops" }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                )
             }
         }
 
-        if (departures != null) DepartureCard(departures, lineColor)
+        if (departures != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "${departures.stop.name} · next",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (departures.loading) LoadingIndicator(Modifier.size(28.dp))
+            }
+            departures.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant) }
+            val now = System.currentTimeMillis()
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            ) {
+                departures.items.take(12).forEachIndexed { i, d ->
+                    val mins = ((d.timeMs - now) / 60_000).coerceAtLeast(0)
+                    val first = i == 0
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = if (first) colors.primaryContainer else colors.surfaceContainerHigh,
+                        contentColor = if (first) colors.onPrimaryContainer else colors.onSurface,
+                    ) {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Text(
+                                when { d.cancelled -> "Cancelled"; mins == 0L -> "Now"; else -> "$mins min" },
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight(700),
+                                    textDecoration = if (d.cancelled) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                ),
+                            )
+                            Text(
+                                formatTime(d.timeMs) + if (d.realTime) " · live" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = (if (first) colors.onPrimaryContainer else colors.onSurfaceVariant),
+                            )
+                            if (d.headsign.isNotBlank()) Text(
+                                d.headsign,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.width(120.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         if (line.stops.isNotEmpty()) {
+            androidx.compose.material3.TextButton(onClick = { showStops = !showStops }) {
+                Text(if (showStops) "Hide stops" else "All ${line.stops.size} stops")
+                Spacer(Modifier.width(6.dp))
+                Icon(if (showStops) Ph.CaretDown else Ph.CaretRight, contentDescription = null, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (showStops && line.stops.isNotEmpty()) {
             Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(vertical = 8.dp)) {
-                    val stops = line.stops.take(80)
+                    val stops = line.stops.take(120)
                     stops.forEachIndexed { i, stop ->
                         val terminal = i == 0 || i == stops.lastIndex
                         val selected = departures?.stop?.id == stop.id && stop.id.isNotBlank()
@@ -271,72 +319,12 @@ fun LineSheet(
     }
 }
 
-@Composable
-private fun DepartureCard(board: app.wayfinder.ui.WayfinderViewModel.DepartureBoard, lineColor: Color) {
-    val colors = MaterialTheme.colorScheme
-    Surface(shape = RoundedCornerShape(24.dp), color = colors.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Next departures", style = MaterialTheme.typography.titleMedium, color = colors.onSecondaryContainer)
-                    Text(board.stop.name, style = MaterialTheme.typography.bodyMedium, color = colors.onSecondaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                if (board.loading) LoadingIndicator(Modifier.size(36.dp))
-            }
-            board.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = colors.onSecondaryContainer) }
-            val now = System.currentTimeMillis()
-            board.items.forEach { d ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(lineColor))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        formatTime(d.timeMs),
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight(700),
-                            textDecoration = if (d.cancelled) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
-                        ),
-                        color = colors.onSecondaryContainer,
-                    )
-                    val late = d.scheduledMs?.let { (d.timeMs - it) / 60_000 } ?: 0
-                    if (late >= 1 && !d.cancelled) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            formatTime(d.scheduledMs),
-                            style = MaterialTheme.typography.bodySmall.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough),
-                            color = colors.onSecondaryContainer.copy(alpha = 0.7f),
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        d.headsign.ifBlank { "—" },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.onSecondaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        when {
-                            d.cancelled -> "Cancelled"
-                            else -> {
-                                val mins = ((d.timeMs - now) / 60_000).coerceAtLeast(0)
-                                (if (mins == 0L) "Now" else "in $mins min") + if (d.realTime) " · live" else ""
-                            }
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (d.cancelled) colors.error else colors.onSecondaryContainer,
-                    )
-                }
-            }
-        }
-    }
-}
-
 internal fun singular(mode: TransitMode) = when (mode) {
     TransitMode.Train -> "Train"
     TransitMode.Metro -> "Metro"
     TransitMode.Tram -> "Tram"
     TransitMode.Bus -> "Bus"
+    TransitMode.Coach -> "Coach"
     TransitMode.Ferry -> "Ferry"
     TransitMode.Other -> "Transit"
 }
@@ -346,6 +334,7 @@ internal fun modeIcon(mode: TransitMode): ImageVector = when (mode) {
     TransitMode.Metro -> Ph.Filled.Subway
     TransitMode.Tram -> Ph.Filled.Tram
     TransitMode.Bus -> Ph.Filled.Bus
+    TransitMode.Coach -> Ph.Filled.Bus
     TransitMode.Ferry -> Ph.Filled.Boat
     TransitMode.Other -> Ph.Filled.TrainSimple
 }

@@ -66,31 +66,32 @@ import app.wayfinder.map.MapController
 import app.wayfinder.map.MapPalette
 import app.wayfinder.map.RouteDrawing
 import app.wayfinder.ui.components.LineSheet
-import app.wayfinder.ui.components.LinesSheet
 import app.wayfinder.ui.components.MapHost
 import app.wayfinder.ui.components.MultiTripSheet
 import app.wayfinder.ui.components.PlaceSheet
 import app.wayfinder.ui.components.humanizeCategory
 import app.wayfinder.data.Place
 import app.wayfinder.data.PlaceKind
-import app.wayfinder.ui.components.MapToolbar
+import app.wayfinder.ui.components.LayersSheet
+import app.wayfinder.ui.components.OfflinePage
+import app.wayfinder.ui.components.SettingsPage
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
 import app.wayfinder.ui.components.SearchOverlay
 import app.wayfinder.ui.components.SearchPill
-import app.wayfinder.ui.components.SettingsSheet
 import app.wayfinder.ui.components.TripCard
 import kotlin.math.roundToInt
 
 /** What the bottom sheet is showing. */
-private enum class SheetMode { None, Place, Settings, Trip, Lines, Line }
+private enum class SheetMode { None, Place, Layers, Trip, Line }
 
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
     SheetMode.Trip -> 440.dp
     SheetMode.Place -> 260.dp
-    SheetMode.Settings -> 520.dp
-    SheetMode.Lines -> 400.dp
-    SheetMode.Line -> 380.dp
+    SheetMode.Layers -> 480.dp
+    SheetMode.Line -> 300.dp
     SheetMode.None -> 0.dp
 }
 
@@ -100,7 +101,11 @@ private fun peekFor(mode: SheetMode): Dp = when (mode) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Unit) {
+fun WayfinderScreen(
+    vm: WayfinderViewModel,
+    requestLocationPermission: () -> Unit,
+    requestNotificationPermission: () -> Unit = {},
+) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current
@@ -125,15 +130,21 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     val picked = vm.highlightedLoaded
     val sheetMode = when {
         vm.tappedPlace != null -> SheetMode.Place
-        vm.settingsOpen && !vm.planning -> SheetMode.Settings
+        vm.settingsOpen && !vm.planning -> SheetMode.Layers
         vm.planning -> SheetMode.Trip
         vm.transitVisible && picked != null -> SheetMode.Line
-        vm.transitVisible -> SheetMode.Lines
         else -> SheetMode.None
     }
     val peek = peekFor(sheetMode)
 
-    val sheetState = rememberStandardBottomSheetState(initialValue = SheetValue.Hidden, skipHiddenState = false)
+    // A sheet that is showing something can be pulled down to its peek, never off screen
+    // (it used to vanish with no way to bring it back).
+    val currentMode by androidx.compose.runtime.rememberUpdatedState(sheetMode)
+    val sheetState = rememberStandardBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        skipHiddenState = false,
+        confirmValueChange = { it != SheetValue.Hidden || currentMode == SheetMode.None },
+    )
     val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
     LaunchedEffect(sheetMode) {
         if (sheetMode == SheetMode.None) sheetState.hide() else sheetState.partialExpand()
@@ -234,24 +245,24 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                             onClose = vm::closePlace,
                         )
                     }
-                    SheetMode.Settings -> SettingsSheet(
-                        ferries = vm.showFerries,
-                        terrain = vm.showTerrain,
-                        relief = vm.showRelief,
-                        onFerries = vm::setFerries,
-                        onTerrain = vm::setTerrain,
-                        onRelief = vm::setRelief,
-                        minLineZoom = vm.minLineZoom,
-                        onMinLineZoom = vm::changeMinLineZoom,
-                        presets = app.wayfinder.data.OfflineTransit.presets,
-                        saved = vm.savedRegions,
-                        download = vm.download,
-                        tileCount = vm::tileCount,
-                        visibleArea = vm::visibleAreaRegion,
-                        onDownload = vm::downloadRegion,
-                        onCancelDownload = vm::cancelDownload,
-                        onDelete = vm::deleteRegion,
-                        onClose = vm::toggleSettings,
+                    SheetMode.Layers -> LayersSheet(
+                        linesOn = vm.showTransit,
+                        linesLoading = vm.transitLoading,
+                        bikesOn = vm.showBike,
+                        bikesLoading = vm.bikeLoading,
+                        terrainOn = vm.showTerrain || vm.showRelief,
+                        ferriesOn = vm.showFerries,
+                        onLines = { syncViewport(); vm.toggleTransit() },
+                        onBikes = { syncViewport(); vm.toggleBike() },
+                        onTerrain = vm::toggleTerrain,
+                        onFerries = { vm.setFerries(!vm.showFerries) },
+                        modes = vm.transitModes,
+                        onToggleMode = vm::toggleMode,
+                        offlineSubtitle = vm.download?.let { "Saving ${it.region.name} · ${it.done} of ${it.total}" }
+                            ?: vm.savedRegions.takeIf { it.isNotEmpty() }?.joinToString { it.region.name }
+                            ?: "Save regions to use lines anywhere",
+                        onOffline = { vm.openPage(WayfinderViewModel.Page.Offline) },
+                        onSettings = { vm.openPage(WayfinderViewModel.Page.Settings) },
                     )
                     SheetMode.Trip -> if (vm.multiStop) MultiTripSheet(
                         mode = vm.mode,
@@ -280,20 +291,11 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                             )
                         },
                     )
-                    SheetMode.Lines -> LinesSheet(
-                        lines = vm.legend,
-                        modes = vm.transitModes,
-                        loading = vm.transitLoading,
-                        hint = vm.overlayHint,
-                        onToggleMode = vm::toggleMode,
-                        onLine = vm::highlight,
-                    )
                     SheetMode.Line -> picked?.let {
                         LineSheet(
                             line = it,
                             departures = vm.departures?.takeIf { d -> d.lineKey == it.info.key },
                             onStop = vm::showDepartures,
-                            onClose = { vm.highlight(it.info.key) },
                         )
                     }
                     SheetMode.None -> Spacer(Modifier.height(1.dp))
@@ -306,7 +308,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 MapHost(
                     controller = controller,
                     palette = palette,
-                    compassTopPx = (statusTop + 140.dp).roundToPx(),
+                    compassTopPx = (statusTop + 84.dp).roundToPx(),
                     attributionBottomPx = (navBottom + 8.dp).roundToPx(),
                     sidePx = 16.dp.roundToPx(),
                     onMapReady = { mapReady = true },
@@ -358,8 +360,22 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         onAddStop = { vm.openSearch(SearchTarget.Stop) },
                         onRemoveStop = vm::removeStop,
                     )
+                } else if (sheetMode == SheetMode.Line && picked != null) {
+                    Row {
+                        androidx.compose.material3.FilledTonalIconButton(
+                            onClick = { vm.highlight(picked.info.key) },
+                            shapes = androidx.compose.material3.IconButtonDefaults.shapes(),
+                            modifier = Modifier.size(52.dp),
+                        ) {
+                            Icon(Ph.ArrowLeft, contentDescription = "Back to the map", modifier = Modifier.size(22.dp))
+                        }
+                    }
                 } else {
-                    SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
+                    SearchPill(
+                        onClick = { vm.openSearch(SearchTarget.To) },
+                        onLayers = vm::toggleSettings,
+                        layersOn = vm.settingsOpen,
+                    )
                 }
             }
 
@@ -388,45 +404,86 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     }
                     .padding(horizontal = 16.dp),
             ) {
-                AnimatedVisibility(
-                    visible = !vm.transitVisible && vm.overlayHint != null,
-                    enter = fadeIn() + scaleIn(initialScale = 0.9f),
-                    exit = fadeOut() + scaleOut(targetScale = 0.9f),
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.inverseSurface,
-                        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                        shadowElevation = 4.dp,
+                val status = vm.overlayHint ?: if (vm.transitVisible && vm.transitLoading) "Saving lines here…" else null
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = status != null && sheetMode != SheetMode.Layers,
+                            enter = fadeIn() + scaleIn(initialScale = 0.9f),
+                            exit = fadeOut() + scaleOut(targetScale = 0.9f),
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                                shadowElevation = 4.dp,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                    if (vm.transitLoading) androidx.compose.material3.LoadingIndicator(Modifier.size(20.dp))
+                                    else Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+                                    Spacer(Modifier.size(8.dp))
+                                    Text(status.orEmpty(), style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(12.dp))
+                    androidx.compose.material3.FloatingActionButton(
+                        onClick = {
+                            val loc = vm.myLocation
+                            when {
+                                !vm.hasLocationPermission -> requestLocationPermission()
+                                loc != null -> controller.flyTo(loc, 16.0)
+                            }
+                        },
+                        shape = RoundedCornerShape(18.dp),
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     ) {
-                        Text(
-                            vm.overlayHint.orEmpty(),
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        Icon(
+                            if (vm.myLocation != null) Ph.Filled.GpsFix else Ph.Crosshair,
+                            contentDescription = "My location",
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }
-                MapToolbar(
-                    showLayers = !vm.planning,
-                    linesOn = vm.showTransit,
-                    linesLoading = vm.transitLoading,
-                    bikesOn = vm.showBike,
-                    bikesLoading = vm.bikeLoading,
-                    hasLocation = vm.myLocation != null,
-                    onLines = { syncViewport(); vm.toggleTransit() },
-                    onBikes = { syncViewport(); vm.toggleBike() },
-                    settingsOn = vm.settingsOpen,
-                    onSettings = vm::toggleSettings,
-                    onLocate = {
-                        val loc = vm.myLocation
-                        when {
-                            !vm.hasLocationPermission -> requestLocationPermission()
-                            loc != null -> controller.flyTo(loc, 16.0)
-                        }
-                    },
-                )
             }
+        }
+    }
+
+    // ---------- Full-screen pages ----------
+    AnimatedVisibility(
+        visible = vm.page != WayfinderViewModel.Page.None,
+        enter = fadeIn(motion.defaultEffectsSpec()) + androidx.compose.animation.slideInHorizontally(motion.defaultSpatialSpec()) { it / 6 },
+        exit = fadeOut(motion.fastEffectsSpec()) + androidx.compose.animation.slideOutHorizontally(motion.fastSpatialSpec()) { it / 6 },
+    ) {
+        var shown by remember { mutableStateOf(vm.page) }
+        if (vm.page != WayfinderViewModel.Page.None) shown = vm.page
+        when (shown) {
+            WayfinderViewModel.Page.Offline -> OfflinePage(
+                saved = vm.savedRegions,
+                download = vm.download,
+                view = vm.viewBounds,
+                browsing = vm.browsing,
+                storage = vm.storage,
+                tileCount = vm::tileCount,
+                visibleArea = vm::visibleAreaRegion,
+                onDownload = { requestNotificationPermission(); vm.downloadRegion(it) },
+                onCancel = vm::cancelDownload,
+                onDelete = vm::deleteRegion,
+                onClearBrowsing = vm::clearBrowsing,
+                onBack = { vm.openPage(WayfinderViewModel.Page.None) },
+            )
+            WayfinderViewModel.Page.Settings -> SettingsPage(
+                minLineZoom = vm.minLineZoom,
+                onMinLineZoom = vm::changeMinLineZoom,
+                shading = vm.showTerrain,
+                onShading = vm::setTerrain,
+                relief = vm.showRelief,
+                onRelief = vm::setRelief,
+                onBack = { vm.openPage(WayfinderViewModel.Page.None) },
+            )
+            WayfinderViewModel.Page.None -> {}
         }
     }
 
@@ -453,6 +510,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.settingsOpen && !vm.planning) { vm.toggleSettings() }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && !vm.settingsOpen && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
+    // Registered last, so it wins while a page is open.
+    BackHandler(enabled = vm.searchTarget == null && vm.page != WayfinderViewModel.Page.None) { vm.openPage(WayfinderViewModel.Page.None) }
 }
 
 /** Trip sheet header: travel modes as a connected group, then the section title and layer chip. */

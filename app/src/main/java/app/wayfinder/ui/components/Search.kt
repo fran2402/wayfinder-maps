@@ -55,42 +55,38 @@ import app.wayfinder.ui.SearchTarget
 /** The resting "Where to?" pill. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun SearchPill(onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun SearchPill(onClick: () -> Unit, onLayers: () -> Unit, layersOn: Boolean, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = colors.surfaceContainerHigh,
         shadowElevation = 6.dp,
-        modifier = modifier.fillMaxWidth().height(64.dp),
+        modifier = modifier.fillMaxWidth().height(56.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 22.dp, end = 12.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 6.dp),
         ) {
-            Icon(
-                Ph.MagnifyingGlass, contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp),
-            )
-            Spacer(Modifier.width(16.dp))
+            Icon(Ph.MagnifyingGlass, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(14.dp))
             Text(
                 "Where to?",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight(500)),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colors.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(MaterialShapes.Cookie9Sided.toShape())
-                    .background(MaterialTheme.colorScheme.primary),
+            androidx.compose.material3.FilledIconToggleButton(
+                checked = layersOn,
+                onCheckedChange = { onLayers() },
+                shapes = androidx.compose.material3.IconButtonDefaults.toggleableShapes(),
+                colors = androidx.compose.material3.IconButtonDefaults.filledIconToggleButtonColors(
+                    containerColor = colors.secondaryContainer,
+                    contentColor = colors.onSecondaryContainer,
+                ),
+                modifier = Modifier.size(44.dp),
             ) {
-                Icon(
-                    Ph.Filled.NavigationArrow, contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(20.dp),
-                )
+                Icon(Ph.Stack, contentDescription = "Map layers", modifier = Modifier.size(22.dp))
             }
         }
     }
