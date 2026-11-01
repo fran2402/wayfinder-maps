@@ -14,7 +14,10 @@ import app.wayfinder.data.TransitRoutes
 
 /** Renders each line's number badge (line colour, line number) as a ready-made map image. */
 class LinePills(private val context: Context) {
-    private val cache = HashMap<String, Bitmap>()
+    /** Small LRU cache: badges are cheap to redraw, memory is not. */
+    private val cache = object : LinkedHashMap<String, Bitmap>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 600
+    }
     private val density = context.resources.displayMetrics.density
     private val dpi = context.resources.displayMetrics.densityDpi
 
@@ -28,7 +31,7 @@ class LinePills(private val context: Context) {
     /** Bitmaps for [lines] that the current style does not have yet, keyed by image name. */
     fun imagesFor(lines: List<LineInfo>): HashMap<String, Bitmap> {
         val out = HashMap<String, Bitmap>()
-        for (line in lines) {
+        for (line in lines.take(600)) {
             val id = TransitRoutes.pillId(line.key)
             out[id] = cache.getOrPut(id) { render(line) }
         }

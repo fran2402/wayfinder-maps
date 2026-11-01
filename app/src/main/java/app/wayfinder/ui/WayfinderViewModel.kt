@@ -393,6 +393,11 @@ class WayfinderViewModel : ViewModel() {
         if (loaderJob?.isActive == true) return
         loaderJob = viewModelScope.launch {
             while (true) {
+                if (loadedTiles.size > 40) {
+                    // Keep memory bounded: start over once a lot of area has been cached.
+                    withContext(storeThread) { bikeStore.clear() }
+                    loadedTiles.clear()
+                }
                 val tiles = nextBikeBatch() ?: break
                 bikeLoading = true
                 val area = tiles.map(Tiles::bounds).reduce { a, b ->
