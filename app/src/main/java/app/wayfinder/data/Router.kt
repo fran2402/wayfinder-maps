@@ -93,7 +93,7 @@ private object Osrm {
 
 /** Public transport routing via Transitous (MOTIS, https://transitous.org). */
 private object Motis {
-    private val apiVersions = listOf("v5", "v4", "v3", "v2", "v1")
+    private val apiVersions = listOf("v6", "v5", "v4", "v3", "v2", "v1")
     @Volatile private var workingVersion: String? = null
 
     suspend fun plan(from: LatLon, to: LatLon, modeVariants: List<String>): List<Itinerary> {

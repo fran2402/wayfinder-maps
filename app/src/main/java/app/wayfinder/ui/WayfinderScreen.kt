@@ -118,6 +118,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     LaunchedEffect(vm.showBike, mapReady) { controller.setBikeVisible(vm.showBike) }
     LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) { controller.setTransit(vm.transitLines, vm.transitStops) }
     LaunchedEffect(vm.bikeLines, mapReady) { controller.setBike(vm.bikeLines) }
+    LaunchedEffect(vm.transitModes, mapReady) { controller.setTransitModes(vm.transitModes) }
     LaunchedEffect(vm.highlightedLine, vm.transitLines, mapReady) { controller.highlightLine(vm.highlightedLine) }
 
     // Make sure overlays know the current viewport even before the first camera move ends.

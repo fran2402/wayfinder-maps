@@ -257,7 +257,7 @@ object MapStyle {
             layout = obj("line-join" to "round", "line-cap" to "round"),
             paint = obj(
                 "line-color" to p.surface,
-                "line-width" to zoomExp(1.3, 4 to 1.6, 9 to 3.2, 13 to 5.5, 18 to 10.0),
+                "line-width" to zoomExp(1.3, 4 to 1.2, 9 to 2.2, 13 to 3.4, 18 to 6.0),
                 "line-opacity" to arr("case", arr("==", get("brunnel"), "tunnel"), 0.5, 0.9),
             )))
         add(layer("net-tiles", "line", "transportation", visibility = netVis,
@@ -265,8 +265,8 @@ object MapStyle {
             layout = obj("line-join" to "round", "line-cap" to "round"),
             paint = obj(
                 "line-color" to railColor,
-                "line-width" to zoomExp(1.3, 4 to 0.6, 9 to 1.6, 13 to 2.8, 18 to 5.0),
-                "line-opacity" to arr("case", arr("==", get("brunnel"), "tunnel"), 0.55, 1.0),
+                "line-width" to zoomExp(1.3, 4 to 0.5, 9 to 1.0, 13 to 1.6, 18 to 3.0),
+                "line-opacity" to arr("case", arr("==", get("brunnel"), "tunnel"), 0.4, 0.7),
             )))
         add(layer("net-lines-casing", "line", source = SRC_NETWORK, visibility = netVis,
             layout = obj("line-join" to "round", "line-cap" to "round",

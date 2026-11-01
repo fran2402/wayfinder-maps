@@ -12,10 +12,14 @@ There is no bottom navigation bar: the map fills the screen and everything else 
 - **OpenStreetMap** vector tiles from [OpenFreeMap](https://openfreemap.org), drawn with a custom
   light and dark style (`MapStyle.kt`): soft land colours, hillshading, coloured POI badges and roads
   with casings.
-- **Whole transit network on demand**: tap the network button (or the *Network* chip in the route sheet) to
-  draw every line in view in its official colour, with stops. The rail network comes from the vector tiles at
-  every zoom level. Individual lines (train, metro, tram, ferry, plus buses when zoomed in) are loaded from OSM
-  route relations via the Overpass API. In Train mode the network is limited to rail.
+- **Public transport and bike route pills** at the top of the map:
+  - *Public transport* draws every route in view with its real line colour and line number, from
+    [Transitous](https://transitous.org) (`/api/experimental/map/routes`, GTFS data). The server thins the
+    network by zoom: long-distance rail when zoomed out, then metro, trams and buses as you zoom in.
+  - Mode chips (Trains, Metro, Trams, Buses, Ferries, Other) filter the map. With everything showing,
+    tapping a chip focuses on that mode.
+  - A row of line pills lists the lines in view, grouped by mode. Tap one to highlight that line.
+  - *Bike routes* draws OSM cycle routes (via Overpass, loaded in cached tiles) and cycleways.
 
 ## Routing
 

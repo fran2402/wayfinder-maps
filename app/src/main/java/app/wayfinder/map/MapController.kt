@@ -7,6 +7,7 @@ import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
 import app.wayfinder.data.LegMode
 import app.wayfinder.data.Overlays
+import app.wayfinder.data.TransitMode
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -20,7 +21,11 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.Layer
+import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 
 /** Route currently drawn on the map, already resolved to colours. */
@@ -51,6 +56,7 @@ class MapController(private val context: Context) {
     private var networkVisible = false
     private var bikeVisible = false
     private var highlightedLine: String? = null
+    private var transitModes: Set<TransitMode> = TransitMode.entries.toSet()
     private var locationEnabled = false
 
     fun attach(map: MapLibreMap) {
@@ -78,6 +84,7 @@ class MapController(private val context: Context) {
             setBikeVisible(bikeVisible)
             route?.let { drawRoute(it) }
             drawOverlays()
+            setTransitModes(transitModes)
             highlightLine(highlightedLine)
             if (locationEnabled) activateLocation(loaded, palette)
             onLoaded()
@@ -190,6 +197,40 @@ class MapController(private val context: Context) {
         val s = style ?: return
         val v = if (show) Property.VISIBLE else Property.NONE
         MapStyle.bikeLayers.forEach { s.getLayer(it)?.setProperties(PropertyFactory.visibility(v)) }
+    }
+
+    /** Shows only the chosen kinds of public transport, both our lines and the base map's rail. */
+    fun setTransitModes(modes: Set<TransitMode>) {
+        transitModes = modes
+        val s = style ?: return
+        val names = JSONArray(modes.map { it.name })
+        val none = "[\"==\",1,0]"
+        val byMode = if (modes.isEmpty()) none else "[\"match\",[\"get\",\"mode\"],$names,true,false]"
+        listOf("net-lines-casing", "net-lines", "net-stops").forEach { s.getLayer(it)?.filter(byMode) }
+        s.getLayer("net-line-labels")?.filter("[\"all\",[\"!=\",[\"get\",\"ref\"],\"\"],$byMode]")
+
+        val subclasses = JSONArray(modes.flatMap {
+            when (it) {
+                TransitMode.Train -> listOf("rail", "narrow_gauge", "preserved")
+                TransitMode.Metro -> listOf("subway", "light_rail", "monorail")
+                TransitMode.Tram -> listOf("tram")
+                TransitMode.Other -> listOf("funicular")
+                TransitMode.Bus, TransitMode.Ferry -> emptyList()
+            }
+        })
+        val tiles = if (subclasses.length() == 0) none else
+            "[\"all\",[\"match\",[\"get\",\"class\"],[\"rail\",\"transit\"],true,false]," +
+                "[\"match\",[\"get\",\"subclass\"],$subclasses,true,false]]"
+        listOf("net-tiles-casing", "net-tiles").forEach { s.getLayer(it)?.filter(tiles) }
+    }
+
+    private fun Layer.filter(json: String) {
+        val e = Expression.Converter.convert(json)
+        when (this) {
+            is LineLayer -> setFilter(e)
+            is CircleLayer -> setFilter(e)
+            is SymbolLayer -> setFilter(e)
+        }
     }
 
     /** Fades every transit line except [key]; null shows all lines again. */

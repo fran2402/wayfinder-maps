@@ -75,9 +75,7 @@ data class LineInfo(
  * and requests never overlap. Dense tiers (buses) use smaller tiles and need more zoom.
  */
 enum class Tier(val tileZoom: Int, val minViewZoom: Double, val routes: String, val withStops: Boolean) {
-    Rail(10, 10.0, "train|subway|light_rail|monorail|funicular|tram|ferry", true),
-    Bus(12, 12.5, "bus|trolleybus", true),
-    Bike(11, 11.0, "bicycle|mtb", false),
+    Bike(12, 11.5, "bicycle|mtb", false),
 }
 
 data class TileId(val tier: Tier, val x: Int, val y: Int)
