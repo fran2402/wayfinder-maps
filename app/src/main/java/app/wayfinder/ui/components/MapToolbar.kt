@@ -44,6 +44,8 @@ fun MapToolbar(
     hasLocation: Boolean,
     onLines: () -> Unit,
     onBikes: () -> Unit,
+    keyOn: Boolean,
+    onKey: () -> Unit,
     onLocate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -64,6 +66,7 @@ fun MapToolbar(
                 ) {
                     ToolbarToggle("Lines", if (linesOn) Ph.Filled.Bus else Ph.Bus, linesOn, linesLoading, onLines, Modifier.weight(1f))
                     ToolbarToggle("Bikes", if (bikesOn) Ph.Filled.Bicycle else Ph.Bicycle, bikesOn, bikesLoading, onBikes, Modifier.weight(1f))
+                    ToolbarToggle("Key", if (keyOn) Ph.Filled.MapTrifold else Ph.MapTrifold, keyOn, false, onKey, Modifier.weight(1f))
                 }
             }
         } else {

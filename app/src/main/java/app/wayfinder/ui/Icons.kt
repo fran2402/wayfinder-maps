@@ -17,6 +17,7 @@ import com.adamglin.phosphoricons.regular.CaretDown as RCaretDown
 import com.adamglin.phosphoricons.regular.Train as RTrain
 import com.adamglin.phosphoricons.regular.TrainSimple as RTrainSimple
 import com.adamglin.phosphoricons.regular.Bus as RBus
+import com.adamglin.phosphoricons.regular.MapTrifold as RMapTrifold
 import com.adamglin.phosphoricons.regular.ArrowBendUpLeft as RArrowBendUpLeft
 import com.adamglin.phosphoricons.regular.ArrowBendUpRight as RArrowBendUpRight
 import com.adamglin.phosphoricons.regular.ArrowUp as RArrowUp
@@ -42,6 +43,7 @@ import com.adamglin.phosphoricons.fill.MapPin as FMapPin
 import com.adamglin.phosphoricons.fill.Train as FTrain
 import com.adamglin.phosphoricons.fill.TrainSimple as FTrainSimple
 import com.adamglin.phosphoricons.fill.Bus as FBus
+import com.adamglin.phosphoricons.fill.MapTrifold as FMapTrifold
 import com.adamglin.phosphoricons.fill.Bicycle as FBicycle
 import com.adamglin.phosphoricons.fill.Tram as FTram
 import com.adamglin.phosphoricons.fill.Subway as FSubway
@@ -82,6 +84,7 @@ object Ph {
     val Train: ImageVector get() = PhosphorIcons.Regular.RTrain
     val TrainSimple: ImageVector get() = PhosphorIcons.Regular.RTrainSimple
     val Bus: ImageVector get() = PhosphorIcons.Regular.RBus
+    val MapTrifold: ImageVector get() = PhosphorIcons.Regular.RMapTrifold
     val ArrowBendUpLeft: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpLeft
     val ArrowBendUpRight: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpRight
     val ArrowUp: ImageVector get() = PhosphorIcons.Regular.RArrowUp
@@ -109,6 +112,7 @@ object Ph {
         val Train: ImageVector get() = PhosphorIcons.Fill.FTrain
         val TrainSimple: ImageVector get() = PhosphorIcons.Fill.FTrainSimple
         val Bus: ImageVector get() = PhosphorIcons.Fill.FBus
+        val MapTrifold: ImageVector get() = PhosphorIcons.Fill.FMapTrifold
         val Bicycle: ImageVector get() = PhosphorIcons.Fill.FBicycle
         val Tram: ImageVector get() = PhosphorIcons.Fill.FTram
         val Subway: ImageVector get() = PhosphorIcons.Fill.FSubway

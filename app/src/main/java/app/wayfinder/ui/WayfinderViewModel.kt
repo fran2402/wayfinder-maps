@@ -125,6 +125,12 @@ class WayfinderViewModel : ViewModel() {
     val transitVisible: Boolean get() = showTransit && transitAvailable
     val bikeVisible: Boolean get() = showBike && bikeAvailable
 
+    /** Whether the map key sheet is open. */
+    var showKey by mutableStateOf(false)
+        private set
+
+    fun toggleKey() { showKey = !showKey }
+
     private var transitData: TransitData? = null
     private var transitJob: Job? = null
     private var transitPending = false

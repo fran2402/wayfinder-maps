@@ -30,6 +30,10 @@ data class MapPalette(
     val roadMinor: String,
     val roadMajor: String,
     val roadCasing: String,
+    val majorCasing: String,
+    val commercial: String,
+    val pitch: String,
+    val cycleway: String,
     val motorway: String,
     val motorwayCasing: String,
     val path: String,
@@ -50,30 +54,35 @@ data class MapPalette(
     val surface: String,
 ) {
     companion object {
+        /** "Soft warm": paper-like land, warm grey buildings, white streets with sand casings. */
         fun light(accent: String, accentContainer: String, destination: String, walk: String) = MapPalette(
             dark = false,
-            land = "#F5F2EC", residential = "#EFEBE4", park = "#CDEBC0", wood = "#C3E2B3",
-            grass = "#D9EFCC", farmland = "#EEEFDF", sand = "#F4EACF", ice = "#F3F8FB",
-            wetland = "#D3EADD", cemetery = "#DCE7D4", hospital = "#F8E2E4", school = "#F4EBD6",
-            industrial = "#ECE8EF", water = "#A5D2F3", waterLine = "#93C6EC", waterLabel = "#3D78AE",
-            building = "#E6E1D8", buildingLine = "#D8D0C3", roadMinor = "#FFFFFF", roadMajor = "#FFFFFF",
-            roadCasing = "#DED6CA", motorway = "#FFD28C", motorwayCasing = "#E9AE5E", path = "#BFB4A5",
-            rail = "#B4ACA1", boundary = "#B2A3C6", label = "#3A3733", labelMinor = "#6F6961",
-            halo = "#FFFFFF", natureLabel = "#3F7A4A", shadow = "#6B5A47", highlight = "#FFFFFF",
+            land = "#F5F3EE", residential = "#EEEBE4", park = "#CDE8C2", wood = "#BBDDAA",
+            grass = "#D6ECCB", farmland = "#EFEFE0", sand = "#F3E7C7", ice = "#F3F8FB",
+            wetland = "#D3EADD", cemetery = "#D7E4CF", hospital = "#F8DFE2", school = "#F6EBD0",
+            industrial = "#ECE9F1", commercial = "#F4E7E4", pitch = "#B8E1A8",
+            water = "#A3D0F2", waterLine = "#6FB2E6", waterLabel = "#2D6AA0",
+            building = "#E3DCD1", buildingLine = "#D2C9BB", roadMinor = "#FFFFFF", roadMajor = "#FFFFFF",
+            roadCasing = "#E7E1D6", majorCasing = "#D8CFC0", motorway = "#FFC57E", motorwayCasing = "#E09A4A",
+            path = "#B3A796", cycleway = "#3FA36A",
+            rail = "#A39C92", boundary = "#B2A3C6", label = "#35322E", labelMinor = "#6B655D",
+            halo = "#FFFFFF", natureLabel = "#3B7445", shadow = "#6B5A47", highlight = "#FFFFFF",
             accent = accent, accentContainer = accentContainer, destination = destination, walk = walk,
             alternative = "#9AA3B2", surface = "#FFFFFF",
         )
 
         fun dark(accent: String, accentContainer: String, destination: String, walk: String) = MapPalette(
             dark = true,
-            land = "#15171B", residential = "#191C21", park = "#18291E", wood = "#1A2D20",
+            land = "#14171B", residential = "#181B20", park = "#17291E", wood = "#1A3022",
             grass = "#1A281F", farmland = "#191D1A", sand = "#29261F", ice = "#1E2227",
-            wetland = "#172621", cemetery = "#1A241D", hospital = "#2A1C20", school = "#26231C",
-            industrial = "#1D1C24", water = "#0E2638", waterLine = "#123049", waterLabel = "#6FA3CF",
-            building = "#22262C", buildingLine = "#2C3138", roadMinor = "#2B3038", roadMajor = "#363D47",
-            roadCasing = "#15171B", motorway = "#5E4726", motorwayCasing = "#2E2416", path = "#3C424B",
-            rail = "#4A515B", boundary = "#5E5672", label = "#DADFE6", labelMinor = "#9AA2AD",
-            halo = "#15171B", natureLabel = "#7FB98A", shadow = "#000000", highlight = "#2A2F36",
+            wetland = "#172621", cemetery = "#1A261E", hospital = "#2B1C21", school = "#28251C",
+            industrial = "#1B1D24", commercial = "#1F1A21", pitch = "#1E3A28",
+            water = "#0D2436", waterLine = "#1D4E73", waterLabel = "#6FA8D8",
+            building = "#252A31", buildingLine = "#30363E", roadMinor = "#2C3139", roadMajor = "#3A414B",
+            roadCasing = "#101215", majorCasing = "#101215", motorway = "#6B4F27", motorwayCasing = "#3B2C17",
+            path = "#4F5661", cycleway = "#4FC07E",
+            rail = "#59616C", boundary = "#5E5672", label = "#DDE2E9", labelMinor = "#9BA3AE",
+            halo = "#14171B", natureLabel = "#7FBF8C", shadow = "#000000", highlight = "#2A2F36",
             accent = accent, accentContainer = accentContainer, destination = destination, walk = walk,
             alternative = "#5B6472", surface = "#1E2126",
         )
@@ -117,8 +126,11 @@ object MapStyle {
         add(fill("landuse-residential", "landuse",
             arr("match", get("class"), arr("residential", "suburb", "neighbourhood"), true, false),
             p.residential, opacity = zoomLinear(10 to 0.0, 12 to 1.0)))
+        add(fill("landuse-commercial", "landuse",
+            arr("match", get("class"), arr("commercial", "retail"), true, false),
+            p.commercial, opacity = zoomLinear(11 to 0.0, 13 to 1.0)))
         add(fill("landuse-industrial", "landuse",
-            arr("match", get("class"), arr("industrial", "commercial", "retail", "railway", "garages"), true, false),
+            arr("match", get("class"), arr("industrial", "railway", "garages", "quarry"), true, false),
             p.industrial, opacity = zoomLinear(11 to 0.0, 13 to 1.0)))
         add(fill("landuse-hospital", "landuse", eq("class", "hospital"), p.hospital))
         add(fill("landuse-school", "landuse",
@@ -138,7 +150,7 @@ object MapStyle {
         add(fill("landcover-sand", "landcover", eq("class", "sand"), p.sand))
         add(fill("landcover-ice", "landcover", eq("class", "ice"), p.ice))
         add(fill("landuse-pitch", "landuse",
-            arr("match", get("class"), arr("pitch", "stadium", "playground", "track"), true, false), p.park,
+            arr("match", get("class"), arr("pitch", "stadium", "playground", "track"), true, false), p.pitch,
             opacity = 0.7))
 
         add(layer("hillshade", "hillshade", source = "dem", maxzoom = 16.0, paint = obj(
@@ -235,7 +247,7 @@ object MapStyle {
             filter = cyclewayFilter,
             layout = obj("line-join" to "round", "line-cap" to "round"),
             paint = obj(
-                "line-color" to if (p.dark) "#5FD08A" else "#1F9D55",
+                "line-color" to p.cycleway,
                 "line-width" to zoomExp(1.4, 11 to 0.8, 14 to 2.0, 18 to 5.0),
             )))
         add(layer("bike-lines-casing", "line", source = SRC_BIKE, visibility = bikeVis,
@@ -655,9 +667,9 @@ object MapStyle {
         RoadClass("minor", listOf("minor"), 12.0,
             arrayOf(12 to 0.6, 14 to 2.6, 18 to 16.0), p.roadMinor, p.roadCasing, 1.2),
         RoadClass("secondary", listOf("secondary", "tertiary"), 9.0,
-            arrayOf(9 to 0.6, 12 to 1.6, 14 to 4.5, 18 to 20.0), p.roadMajor, p.roadCasing, 1.5),
+            arrayOf(9 to 0.6, 12 to 1.6, 14 to 4.5, 18 to 20.0), p.roadMajor, p.majorCasing, 1.5),
         RoadClass("primary", listOf("primary", "trunk"), 6.0,
-            arrayOf(6 to 0.5, 10 to 1.6, 14 to 6.0, 18 to 24.0), p.roadMajor, p.roadCasing, 1.8),
+            arrayOf(6 to 0.5, 10 to 1.6, 14 to 6.0, 18 to 24.0), p.roadMajor, p.majorCasing, 1.8),
         RoadClass("motorway", listOf("motorway"), 5.0,
             arrayOf(5 to 0.7, 10 to 2.2, 14 to 7.0, 18 to 28.0), p.motorway, p.motorwayCasing, 2.0),
     )
