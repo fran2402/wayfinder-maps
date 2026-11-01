@@ -283,6 +283,20 @@ object TransitRoutes {
         RegexOption.IGNORE_CASE,
     )
 
+    private val COACH_NAMES = listOf(
+        "flix" to "FlixBus", "blablacar" to "BlaBlaCar", "regiojet" to "RegioJet", "arriva" to "Arriva",
+        "eurolines" to "Eurolines", "megabus" to "Megabus", "national express" to "National Express",
+        "alsa" to "ALSA", "nomago" to "Nomago", "ecolines" to "Ecolines", "leo express" to "Leo Express",
+        "itabus" to "Itabus", "greyhound" to "Greyhound", "fernbus" to "Fernbus",
+    )
+
+    /** A short badge text for a coach without a line number. */
+    private fun coachLabel(r: RawRoute): String {
+        val hay = (r.routeId + " " + r.name).lowercase().replace('_', ' ').replace('-', ' ')
+        COACH_NAMES.firstOrNull { hay.contains(it.first) }?.let { return it.second }
+        return r.name.trim().takeIf { it.isNotEmpty() }?.let { if (it.length <= 14) it else it.take(13) + "…" } ?: "Coach"
+    }
+
     /** Intercity or commercial coach rather than a local public bus. */
     private fun isCoach(r: RawRoute): Boolean =
         r.mode == "COACH" || COACH_OPERATORS.containsMatchIn(r.routeId) || COACH_OPERATORS.containsMatchIn(r.name)
@@ -298,11 +312,14 @@ object TransitRoutes {
         for (route in ordered.take(maxRoutes)) {
             val (baseMode, osmRoute) = classify(route.mode)
             val mode = if (baseMode == TransitMode.Bus && isCoach(route)) TransitMode.Coach else baseMode
-            val ref = route.ref.takeIf { it.length <= 10 } ?: ""
+            val numberRef = route.ref.takeIf { it.length <= 10 } ?: ""
+            // Coaches often have no line number: label them by operator (or name) so they still
+            // get a badge and can be picked.
+            val ref = numberRef.ifBlank { if (mode == TransitMode.Coach) coachLabel(route) else "" }
             val color = route.color ?: mode.colorArgb
             val text = route.text?.takeIf { it != color }
                 ?: if (Palette.luminance(color) > 0.6) 0xFF1B1B1F.toInt() else 0xFFFFFFFF.toInt()
-            val key = "${mode.name}|${ref.ifBlank { route.name }}|${Palette.hex(color)}"
+            val key = "${mode.name}|${numberRef.ifBlank { route.name.ifBlank { route.routeId } }}|${Palette.hex(color)}"
 
             val parts = ArrayList<FloatArray>()
             val ids = ArrayList<Int>()
@@ -547,7 +564,7 @@ object TransitRoutes {
             Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()), r.routeIdx)
     }
 
-    fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false): TransitData {
+    fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false, overlapZoom: Double? = null): TransitData {
         class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()
             val ids = HashSet<Int>()
@@ -584,6 +601,15 @@ object TransitRoutes {
             }
         }
 
+        // Zoomed out, lines sharing a track are drawn once: the most important one, on top.
+        if (!spread && overlapZoom != null) {
+            val order = byKey.values.sortedWith(
+                compareByDescending<Acc> { it.first.rank }.thenByDescending { maxOf(it.n - it.s, it.e - it.w) }
+            )
+            val kept = dropOverlaps(order.map { it.parts }, overlapZoom)
+            order.forEachIndexed { i, acc -> acc.parts.clear(); acc.parts.addAll(kept[i]) }
+        }
+
         // Lines sharing a street are drawn side by side: each run of a shape gets a slot offset.
         val runs: Map<String, Map<Float, List<FloatArray>>>? =
             if (spread && byKey.values.sumOf { a -> a.parts.sumOf { it.size } } < 1_500_000)
@@ -599,6 +625,7 @@ object TransitRoutes {
             val colorHex = Palette.hex(r.color)
             val groups: Map<Float, List<FloatArray>> = runs?.get(key) ?: mapOf(0f to acc.parts)
             for ((off, parts) in groups) {
+                if (parts.isEmpty()) continue
                 if (!first) lines.append(',')
                 first = false
                 lines.append("""{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[""")
@@ -662,6 +689,66 @@ object TransitRoutes {
         val dLat = Math.toRadians((lat2 - lat1).toDouble())
         val dLon = Math.toRadians((lon2 - lon1).toDouble()) * kotlin.math.cos(Math.toRadians(lat1.toDouble()))
         return 6_371_000.0 * kotlin.math.sqrt(dLat * dLat + dLon * dLon)
+    }
+
+    // ---------- Shared track, drawn once ----------
+
+    /**
+     * Removes the stretches of each line already covered by an earlier (more important) line
+     * in the same direction band, judged on a grid of about 3 pixels at [zoom].
+     */
+    private fun dropOverlaps(lines: List<List<FloatArray>>, zoom: Double): List<List<FloatArray>> {
+        val cell = 360.0 / (256.0 * Math.pow(2.0, zoom)) * 3.0
+        val buckets = 8
+        val taken = HashSet<Long>(1 shl 16)
+        fun keyOf(lat: Double, lon: Double, dir: Int): Long {
+            val cx = Math.floor(lon * Math.cos(Math.toRadians(lat)) / cell).toLong() and 0x3FFFFF
+            val cy = Math.floor(lat / cell).toLong() and 0x3FFFFF
+            return (cx shl 26) or (cy shl 4) or dir.toLong()
+        }
+        val out = ArrayList<List<FloatArray>>(lines.size)
+        val samples = ArrayList<Long>()
+        for (parts in lines) {
+            val kept = ArrayList<FloatArray>()
+            val marks = ArrayList<Long>()
+            for (pts in parts) {
+                val segs = pts.size / 2 - 1
+                if (segs < 1) continue
+                val keep = BooleanArray(segs)
+                for (sIdx in 0 until segs) {
+                    val i = sIdx * 2
+                    val la0 = pts[i].toDouble(); val lo0 = pts[i + 1].toDouble(); val la1 = pts[i + 2].toDouble(); val lo1 = pts[i + 3].toDouble()
+                    val dx = (lo1 - lo0) * Math.cos(Math.toRadians(la0)); val dy = la1 - la0
+                    var a = Math.atan2(dy, dx); if (a < 0) a += Math.PI; if (a >= Math.PI) a -= Math.PI
+                    val b = (a / Math.PI * buckets).toInt() % buckets
+                    val steps = (Math.hypot(dx, dy) / (cell / 2)).toInt().coerceIn(1, 200)
+                    samples.clear()
+                    var covered = true
+                    for (k in 0..steps) {
+                        val f = k.toDouble() / steps
+                        val key = keyOf(la0 + dy * f, lo0 + (lo1 - lo0) * f, b)
+                        samples += key
+                        if (covered && key !in taken && keyOf(la0 + dy * f, lo0 + (lo1 - lo0) * f, (b + 1) % buckets) !in taken &&
+                            keyOf(la0 + dy * f, lo0 + (lo1 - lo0) * f, (b + buckets - 1) % buckets) !in taken) covered = false
+                    }
+                    keep[sIdx] = !covered
+                    if (!covered) marks.addAll(samples)
+                }
+                var start = -1
+                for (sIdx in 0..segs) {
+                    val k = sIdx < segs && keep[sIdx]
+                    if (k && start < 0) start = sIdx
+                    if (!k && start >= 0) {
+                        kept += if (start == 0 && sIdx == segs) pts else pts.copyOfRange(start * 2, sIdx * 2 + 2)
+                        start = -1
+                    }
+                }
+            }
+            // Marked after the whole line, so a line never hides its own other direction.
+            taken.addAll(marks)
+            out += kept
+        }
+        return out
     }
 
     // ---------- Side-by-side lines ----------

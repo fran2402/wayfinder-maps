@@ -112,7 +112,7 @@ class OfflineTransit(context: Context) {
         private const val MAX_SPLITS = 6
 
         /** Requests in flight at once, across the whole download. */
-        private const val PARALLEL = 16
+        private const val PARALLEL = 24
 
         /** Every square starts split into at least 4^this pieces. */
         private const val MIN_START_DEPTH = 2
@@ -225,8 +225,39 @@ class OfflineTransit(context: Context) {
 
     private val gate = Semaphore(PARALLEL)
 
-    /** Shared pause after the server said it is busy, so every worker backs off together. */
+    /**
+     * Adaptive concurrency: requests in flight are capped at [allowed], which grows by one
+     * after every few successes and halves when the server says it is busy. That finds the
+     * fastest rate Transitous accepts instead of stalling everything for long pauses.
+     */
+    @Volatile private var allowed = 6
+    private val inFlight = java.util.concurrent.atomic.AtomicInteger(0)
+    private val okStreak = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Short shared pause after the server said it is busy. */
     @Volatile private var pauseUntil = 0L
+
+    private suspend fun <T> limited(block: suspend () -> T): T = gate.withPermit {
+        while (true) {
+            val wait = pauseUntil - System.currentTimeMillis()
+            if (wait > 0) delay(wait)
+            val n = inFlight.get()
+            if (n < allowed && inFlight.compareAndSet(n, n + 1)) break
+            delay(40)
+        }
+        try { block() } finally { inFlight.decrementAndGet() }
+    }
+
+    private fun onServerOk() {
+        if (okStreak.incrementAndGet() >= 4) { okStreak.set(0); if (allowed < PARALLEL) allowed++ }
+    }
+
+    private fun onServerBusy(retryAfterS: Long?) {
+        okStreak.set(0)
+        allowed = maxOf(2, allowed / 2)
+        val jitter = (Math.random() * 800).toLong()
+        pauseUntil = maxOf(pauseUntil, System.currentTimeMillis() + (retryAfterS?.coerceIn(1, 30)?.times(1000) ?: 1_500L) + jitter)
+    }
 
     /**
      * How finely the last unit had to be split. Neighbouring squares are similarly dense, so
@@ -327,13 +358,11 @@ class OfflineTransit(context: Context) {
         var tries = 0
         var zoom = SERVER_ZOOM
         while (true) {
-            val result = gate.withPermit {
-                val wait = pauseUntil - System.currentTimeMillis()
-                if (wait > 0) delay(wait)
+            val result = limited {
                 runCatching { TransitRoutes.loadTile(area, zoom, includeBus = true, maxRoutes = Int.MAX_VALUE) }
             }
             val e = result.exceptionOrNull()
-            if (e == null) { sink(area, depth, result.getOrThrow()); return }
+            if (e == null) { onServerOk(); sink(area, depth, result.getOrThrow()); return }
             if (e is CancellationException) throw e
             onProblem(describe(e))
             val busy = e is HttpException && (e.code == 429 || e.code == 503)
@@ -341,10 +370,14 @@ class OfflineTransit(context: Context) {
             // 422 is Transitous saying the area holds more routes than one answer may carry.
             val tooDense = e is HttpException && e.code == 422
             val timedOut = e is java.io.InterruptedIOException
-            if ((busy || offline) && waits < 8) {
+            if (busy && waits < 12) {
                 waits++
-                val hint = (e as? HttpException)?.retryAfterS?.coerceIn(1, 300)?.times(1000)
-                pauseUntil = System.currentTimeMillis() + (hint ?: (10_000L * waits).coerceAtMost(60_000L))
+                onServerBusy((e as? HttpException)?.retryAfterS)
+                continue
+            }
+            if (offline && waits < 8) {
+                waits++
+                delay(5_000L * waits)
                 continue
             }
             if ((tooDense || timedOut || tries > 0) && depth < MAX_SPLITS) {

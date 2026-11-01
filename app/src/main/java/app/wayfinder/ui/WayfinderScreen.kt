@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -85,12 +86,15 @@ import kotlin.math.roundToInt
 /** What the bottom sheet is showing. */
 private enum class SheetMode { None, Place, Settings, Trip, Lines, Line }
 
+/** Height of a sheet pulled down: its handle and title stay in reach. */
+private val COLLAPSED = 92.dp
+
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
-    SheetMode.Trip -> 440.dp
-    SheetMode.Place -> 260.dp
+    SheetMode.Trip -> 560.dp
+    SheetMode.Place -> 320.dp
     SheetMode.Settings -> 520.dp
-    SheetMode.Lines -> 400.dp
-    SheetMode.Line -> 380.dp
+    SheetMode.Lines -> 460.dp
+    SheetMode.Line -> 560.dp
     SheetMode.None -> 0.dp
 }
 
@@ -145,8 +149,10 @@ fun WayfinderScreen(
         confirmValueChange = { it != SheetValue.Hidden || currentMode == SheetMode.None },
     )
     val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+    // A sheet opens at its full (capped) height; dragged down it collapses to a small bar with
+    // its handle and title, from which it can be swiped back up.
     LaunchedEffect(sheetMode) {
-        if (sheetMode == SheetMode.None) sheetState.hide() else sheetState.partialExpand()
+        if (sheetMode == SheetMode.None) sheetState.hide() else sheetState.expand()
     }
 
     // ---------- Keep the map in sync with state ----------
@@ -227,13 +233,14 @@ fun WayfinderScreen(
 
     BottomSheetScaffold(
         scaffoldState = scaffoldState,
-        sheetPeekHeight = if (sheetMode == SheetMode.None) 0.dp else peek + navBottom,
+        sheetPeekHeight = if (sheetMode == SheetMode.None) 0.dp else COLLAPSED + navBottom,
         sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
         sheetContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         sheetShadowElevation = 8.dp,
         sheetSwipeEnabled = sheetMode != SheetMode.None,
         sheetContent = {
-            Box(Modifier.navigationBarsPadding()) {
+            val maxSheet = if (sheetMode == SheetMode.Settings) (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.82f).dp else peek
+            Box(Modifier.navigationBarsPadding().heightIn(max = maxSheet)) {
                 when (sheetMode) {
                     SheetMode.Place -> vm.tappedPlace?.let { detail ->
                         PlaceSheet(

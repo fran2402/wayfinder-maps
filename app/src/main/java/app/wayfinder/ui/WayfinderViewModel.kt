@@ -356,7 +356,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Transit map tiles: fetched one at a time, cached (LRU), merged for the view. */
     /** [offline] tiles come from downloaded data (a fixed level), others from the network. */
-    private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false)
+    /** [lod] is the zoom a saved tile was simplified for on loading (zoomed-out views need less). */
+    private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false, val lod: Int = 0)
     private val tileCache = object : LinkedHashMap<TKey, TileData>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > 90
     }
@@ -769,7 +770,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     fun onViewport(bounds: Bounds, zoom: Double) {
         lastViewport = bounds to zoom
         linesInZoom = zoom >= minLineZoom
-        val band = when { zoom >= SPREAD_ZOOM -> 3; zoom >= 13.5 -> 2; zoom >= 11.0 -> 1; else -> 0 }
+        // Overlap removal depends on the zoom, so redraw on each whole zoom step below 13.
+        val band = when { zoom >= SPREAD_ZOOM -> 30; zoom >= 13.5 -> 20; zoom >= 13.0 -> 15; zoom >= 11.0 -> 10 + zoom.toInt(); else -> zoom.toInt() }
         if (band != detailBand) {
             detailBand = band
             if (shownTiles.isNotEmpty()) rebuildTransit()
@@ -877,9 +879,17 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val x0 = Tiles.lonToX(area.west, level.z); val x1 = Tiles.lonToX(area.east, level.z)
         val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
         val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0
+        // Detail to load saved tiles at: continent views get coarse shapes and long-distance modes only.
+        val lod = when (level) {
+            OfflineTransit.Level.Rail -> when { zoom < 4.5 -> 3; zoom < 5.5 -> 4; zoom < 6.5 -> 5; else -> 7 }
+            OfflineTransit.Level.City -> if (zoom < 9.5) 9 else 10
+            OfflineTransit.Level.Street -> 14
+        }
         val keys = ArrayList<TKey>()
-        for (x in x0..x1) for (y in y0..y1) if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true)
-        neededTiles = keys.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(80)
+        for (x in x0..x1) for (y in y0..y1) if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true, lod = lod)
+        // Continent views may need many tiles, but each holds only a light train network.
+        val cap = if (level == OfflineTransit.Level.Rail) 500 else 80
+        neededTiles = keys.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(cap)
 
         val ux0 = Tiles.lonToX(area.west, 8); val ux1 = Tiles.lonToX(area.east, 8)
         val uy0 = Tiles.latToY(area.north, 8); val uy1 = Tiles.latToY(area.south, 8)
@@ -901,8 +911,15 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                     // Lighter shapes for zoomed-out views: fewer points for the map to tile.
                     withContext(storeThread) {
                         when (lvl) {
-                            OfflineTransit.Level.Rail -> TransitRoutes.reduce(t, 7, 1_500)
-                            OfflineTransit.Level.City -> TransitRoutes.reduce(t, 10, 4_000)
+                            OfflineTransit.Level.Rail -> {
+                                // Far out, only what you can see from a continent away: trains, coaches, ferries.
+                                val far = next.lod < 7
+                                val kept = if (far) TileData(t.routes.filter {
+                                    it.mode == TransitMode.Train || it.mode == TransitMode.Coach || it.mode == TransitMode.Ferry
+                                }, t.zoomFiltered) else t
+                                TransitRoutes.reduce(kept, next.lod, if (far) 400 else 1_500)
+                            }
+                            OfflineTransit.Level.City -> TransitRoutes.reduce(t, next.lod, 4_000)
                             OfflineTransit.Level.Street -> t
                         }
                     }
@@ -928,7 +945,11 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             shownTiles = keys.filter { it in tileCache }.toSet()
             val zoom = lastViewport?.second ?: 12.0
             // Stops and line badges only show close in; leave them out further away.
-            val data = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = zoom >= 11.0, spread = zoom >= SPREAD_ZOOM) }
+            val data = withContext(storeThread) { TransitRoutes.merge(
+                    tiles, withStops = zoom >= 11.0, spread = zoom >= SPREAD_ZOOM,
+                    // Below street level, lines sharing a track are drawn once.
+                    overlapZoom = if (zoom < 13.0) zoom else null,
+                ) }
             transitData = data
             transitPills = if (zoom >= 13.5) data.routes.map { it.info } else emptyList()
             transitLines = data.lines
