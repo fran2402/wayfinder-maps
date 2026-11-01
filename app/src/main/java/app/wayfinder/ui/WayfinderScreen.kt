@@ -271,6 +271,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 ) {
                     LayerToggles(
                         showTransitToggle = vm.transitAvailable,
+                        transitLabel = if (vm.planning) "Show lines" else "Public transport",
                         transitOn = vm.showTransit,
                         transitLoading = vm.transitLoading && !vm.transitVisible,
                         showBikeToggle = vm.bikeAvailable,

@@ -4,6 +4,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.toShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,28 +68,13 @@ fun RouteSheet(
     onRetry: () -> Unit,
 ) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
+    val isTransit = mode == TravelMode.Transit || mode == TravelMode.Train
     Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, bottom = 8.dp),
-        ) {
-            Text(
-                when (mode) {
-                    TravelMode.Transit -> "Public transport"
-                    TravelMode.Train -> "Trains"
-                    TravelMode.Walk -> "Walking"
-                    TravelMode.Cycle -> "Cycling"
-                },
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f),
-            )
-        }
-
         when {
             loading -> Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxWidth().height(200.dp),
+                modifier = Modifier.fillMaxWidth().height(220.dp),
             ) {
                 ContainedLoadingIndicator(Modifier.size(64.dp))
                 Spacer(Modifier.height(16.dp))
@@ -95,55 +88,95 @@ fun RouteSheet(
             error != null -> Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxWidth().height(200.dp).padding(horizontal = 32.dp),
+                modifier = Modifier.fillMaxWidth().height(220.dp).padding(horizontal = 32.dp),
             ) {
-                Icon(
-                    Ph.WarningCircle, contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(36.dp),
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(56.dp).clip(MaterialShapes.Cookie6Sided.toShape())
+                        .background(MaterialTheme.colorScheme.errorContainer),
+                ) {
+                    Icon(
+                        Ph.WarningCircle, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(12.dp))
-                Text(error, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onRetry) {
+                Button(onClick = onRetry, shapes = ButtonDefaults.shapes()) {
                     Icon(Ph.ArrowClockwise, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Try again")
                 }
             }
 
-            else -> LazyColumn(
+            isTransit -> LazyColumn(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                itemsIndexed(itineraries) { index, itinerary ->
-                    ItineraryCard(
-                        itinerary = itinerary,
-                        mode = mode,
-                        selected = index == selected,
-                        onClick = { onSelect(index) },
-                    )
-                }
                 item {
                     Text(
-                        if (mode == TravelMode.Walk || mode == TravelMode.Cycle) {
-                            "Routing by FOSSGIS OSRM · Map data © OpenStreetMap contributors"
-                        } else {
-                            "Timetables via Transitous · Map data © OpenStreetMap contributors"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                        if (mode == TravelMode.Train) "Train connections" else "Routes",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 4.dp),
                     )
+                }
+                itemsIndexed(itineraries) { index, itinerary ->
+                    TransitCard(itinerary, selected = index == selected, onClick = { onSelect(index) })
+                }
+                item { Credit("Timetables via Transitous · Map data © OpenStreetMap contributors") }
+            }
+
+            else -> {
+                val current = itineraries.getOrNull(selected)
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    if (current != null) {
+                        item { ActiveSummary(current, mode) }
+                        item { Steps(current.legs.firstOrNull()?.steps.orEmpty()) }
+                    }
+                    if (itineraries.size > 1) {
+                        item {
+                            Text(
+                                "Other routes",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp, top = 4.dp),
+                            )
+                        }
+                        itemsIndexed(itineraries) { index, itinerary ->
+                            if (index != selected) AlternativeCard(itinerary, onClick = { onSelect(index) })
+                        }
+                    }
+                    item { Credit("Routing by FOSSGIS OSRM · Map data © OpenStreetMap contributors") }
                 }
             }
         }
     }
 }
 
+@Composable
+private fun Credit(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+    )
+}
+
+/** Transit option. The chosen one expands (shape and colour morph) to show the full timeline. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ItineraryCard(itinerary: Itinerary, mode: TravelMode, selected: Boolean, onClick: () -> Unit) {
+private fun TransitCard(itinerary: Itinerary, selected: Boolean, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val container by animateColorAsState(
         if (selected) colors.secondaryContainer else colors.surfaceContainerHighest,
@@ -151,48 +184,85 @@ private fun ItineraryCard(itinerary: Itinerary, mode: TravelMode, selected: Bool
         label = "cardColor",
     )
     val corner by animateDpAsState(
-        if (selected) 32.dp else 20.dp,
+        if (selected) 28.dp else 20.dp,
         animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
         label = "cardCorner",
     )
-    val isTransit = mode == TravelMode.Transit || mode == TravelMode.Train
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(corner),
-        color = container,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
-            Row(verticalAlignment = Alignment.Bottom) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(corner), color = container, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = if (selected) 18.dp else 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     formatDuration(itinerary.durationS),
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = if (selected) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f),
                 )
-                if (isTransit && itinerary.startMs != null) {
+                if (itinerary.startMs != null) {
                     Text(
                         "${formatTime(itinerary.startMs)} – ${formatTime(itinerary.endMs)}",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         color = colors.onSurfaceVariant,
                     )
                 }
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                summary(itinerary, isTransit),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant,
-            )
-            if (isTransit) {
-                Spacer(Modifier.height(12.dp))
-                LegStrip(itinerary.legs)
-            }
+            Spacer(Modifier.height(10.dp))
+            LegStrip(itinerary.legs)
+            Spacer(Modifier.height(8.dp))
+            Text(summary(itinerary, isTransit = true), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
             AnimatedVisibility(visible = selected) {
                 Column {
-                    Spacer(Modifier.height(16.dp))
-                    if (isTransit) Timeline(itinerary) else Steps(itinerary.legs.firstOrNull()?.steps.orEmpty())
+                    Spacer(Modifier.height(14.dp))
+                    HorizontalDivider(color = colors.outlineVariant)
+                    Spacer(Modifier.height(14.dp))
+                    Timeline(itinerary)
                 }
             }
+        }
+    }
+}
+
+/** Walking / cycling: the active route's headline numbers and an expressive mode badge. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ActiveSummary(itinerary: Itinerary, mode: TravelMode) {
+    val colors = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(formatDuration(itinerary.durationS), style = MaterialTheme.typography.displaySmall)
+            Text(
+                summary(itinerary, isTransit = false),
+                style = MaterialTheme.typography.bodyLarge,
+                color = colors.onSurfaceVariant,
+            )
+        }
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(60.dp).clip(MaterialShapes.Cookie9Sided.toShape()).background(colors.primaryContainer),
+        ) {
+            Icon(
+                if (mode == TravelMode.Cycle) Ph.Filled.PersonSimpleBike else Ph.Filled.PersonSimpleWalk,
+                contentDescription = null,
+                tint = colors.onPrimaryContainer,
+                modifier = Modifier.size(28.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AlternativeCard(itinerary: Itinerary, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+            Text(formatDuration(itinerary.durationS), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text(
+                itinerary.distanceM?.let { formatDistance(it) } ?: "",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -394,28 +464,42 @@ private fun DottedRail(color: Color) {
     }
 }
 
+/** Turn-by-turn list: one grouped surface, round tonal icons, distances right-aligned. */
 @Composable
 private fun Steps(steps: List<Step>) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        steps.take(40).forEach { step ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
-                val icon = when {
-                    step.text.startsWith("Arrive") -> Ph.Filled.FlagCheckered
-                    step.text.contains("left", ignoreCase = true) || step.text.contains("right", ignoreCase = true) -> Ph.Signpost
-                    else -> Ph.ArrowRight
-                }
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(14.dp))
-                Text(step.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                if (step.distanceM >= 1) {
-                    Text(
-                        formatDistance(step.distanceM),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+    val colors = MaterialTheme.colorScheme
+    if (steps.isEmpty()) return
+    Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(vertical = 6.dp)) {
+            steps.take(40).forEachIndexed { index, step ->
+                if (index > 0) HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.6f), modifier = Modifier.padding(start = 70.dp, end = 16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(40.dp).clip(CircleShape).background(colors.secondaryContainer),
+                    ) {
+                        Icon(stepIcon(step.text), contentDescription = null, tint = colors.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Text(step.text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    if (step.distanceM >= 1) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(formatDistance(step.distanceM), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                    }
                 }
             }
         }
     }
 }
 
+private fun stepIcon(text: String) = when {
+    text.startsWith("Arrive") -> Ph.Filled.FlagCheckered
+    text.contains("U-turn") -> Ph.ArrowUUpLeft
+    text.contains("roundabout", ignoreCase = true) -> Ph.ArrowsClockwise
+    text.contains("left", ignoreCase = true) -> Ph.ArrowBendUpLeft
+    text.contains("right", ignoreCase = true) -> Ph.ArrowBendUpRight
+    else -> Ph.ArrowUp
+}

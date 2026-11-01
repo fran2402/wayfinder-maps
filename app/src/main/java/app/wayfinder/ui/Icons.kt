@@ -17,6 +17,11 @@ import com.adamglin.phosphoricons.regular.CaretDown as RCaretDown
 import com.adamglin.phosphoricons.regular.Train as RTrain
 import com.adamglin.phosphoricons.regular.TrainSimple as RTrainSimple
 import com.adamglin.phosphoricons.regular.Bus as RBus
+import com.adamglin.phosphoricons.regular.ArrowBendUpLeft as RArrowBendUpLeft
+import com.adamglin.phosphoricons.regular.ArrowBendUpRight as RArrowBendUpRight
+import com.adamglin.phosphoricons.regular.ArrowUp as RArrowUp
+import com.adamglin.phosphoricons.regular.ArrowUUpLeft as RArrowUUpLeft
+import com.adamglin.phosphoricons.regular.ArrowsClockwise as RArrowsClockwise
 import com.adamglin.phosphoricons.regular.Bicycle as RBicycle
 import com.adamglin.phosphoricons.regular.Tram as RTram
 import com.adamglin.phosphoricons.regular.Subway as RSubway
@@ -77,6 +82,11 @@ object Ph {
     val Train: ImageVector get() = PhosphorIcons.Regular.RTrain
     val TrainSimple: ImageVector get() = PhosphorIcons.Regular.RTrainSimple
     val Bus: ImageVector get() = PhosphorIcons.Regular.RBus
+    val ArrowBendUpLeft: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpLeft
+    val ArrowBendUpRight: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpRight
+    val ArrowUp: ImageVector get() = PhosphorIcons.Regular.RArrowUp
+    val ArrowUUpLeft: ImageVector get() = PhosphorIcons.Regular.RArrowUUpLeft
+    val ArrowsClockwise: ImageVector get() = PhosphorIcons.Regular.RArrowsClockwise
     val Bicycle: ImageVector get() = PhosphorIcons.Regular.RBicycle
     val Tram: ImageVector get() = PhosphorIcons.Regular.RTram
     val Subway: ImageVector get() = PhosphorIcons.Regular.RSubway

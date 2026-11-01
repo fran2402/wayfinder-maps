@@ -89,6 +89,7 @@ object TransitRoutes {
         /** Stops as [lat, lon] pairs, index-aligned with the response's stop array. */
         var stopCoords = FloatArray(0)
         var stopCount = 0
+        var stopNames: Array<String?> = emptyArray()
         var zoomFiltered = false
     }
 
@@ -204,25 +205,29 @@ object TransitRoutes {
 
     private fun readStops(r: JsonReader, raw: Raw) {
         var coords = FloatArray(512)
+        val names = ArrayList<String?>()
         var n = 0
         r.beginArray()
         while (r.hasNext()) {
-            var lat = Float.NaN; var lon = Float.NaN
+            var lat = Float.NaN; var lon = Float.NaN; var name: String? = null
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
                     "lat" -> lat = r.nextDouble().toFloat()
                     "lon" -> lon = r.nextDouble().toFloat()
+                    "name" -> name = r.nextStringOrEmpty().takeIf { it.isNotBlank() }
                     else -> r.skipValue()
                 }
             }
             r.endObject()
             if (n + 2 > coords.size) coords = coords.copyOf(coords.size * 2)
             coords[n++] = lat; coords[n++] = lon
+            names += name
         }
         r.endArray()
         raw.stopCoords = coords.copyOf(n)
         raw.stopCount = n / 2
+        raw.stopNames = names.toTypedArray()
     }
 
     // ---------- Output ----------
@@ -319,7 +324,9 @@ object TransitRoutes {
             firstStop = false
             stops.append("""{"type":"Feature","geometry":{"type":"Point","coordinates":[""")
                 .appendCoord(lon).append(',').appendCoord(lat)
-                .append("]},\"properties\":{").append(info).append("}}")
+                .append("]},\"properties\":{").append(info)
+            raw.stopNames.getOrNull(idx)?.let { stops.append(",\"name\":").append(quote(it)) }
+            stops.append("}}")
         }
         stops.append("]}")
 

@@ -222,13 +222,16 @@ class MapController(private val context: Context) {
 
     private fun applyTransitFilters() {
         val s = style ?: return
-        val none = "[\"==\",1,0]"
+        val none = "[\"boolean\",false]"
         val names = JSONArray(transitModes.map { it.name })
         val byMode = if (transitModes.isEmpty()) none else "[\"match\",[\"get\",\"mode\"],$names,true,false]"
         val key = highlightedLine
         val filter = if (key == null) byMode
         else "[\"all\",$byMode,[\"==\",[\"get\",\"key\"],${JSONObject.quote(key)}]]"
-        listOf("net-lines-casing", "net-lines", "net-stops").forEach { s.getLayer(it)?.filter(filter) }
+        // Picked line: drawn by the thicker focus layers, with its stops named.
+        listOf("net-lines-casing", "net-lines").forEach { s.getLayer(it)?.filter(if (key == null) byMode else none) }
+        listOf("net-focus-casing", "net-focus", "net-stop-labels").forEach { s.getLayer(it)?.filter(if (key == null) none else filter) }
+        s.getLayer("net-stops")?.filter(filter)
         s.getLayer("net-line-labels")?.filter("[\"all\",[\"has\",\"pill\"],$filter]")
 
         // The base map's rail stays as faint context; hide it while a single line is focused.

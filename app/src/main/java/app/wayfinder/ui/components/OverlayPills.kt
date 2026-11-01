@@ -1,6 +1,7 @@
 package app.wayfinder.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -28,6 +29,7 @@ import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -37,6 +39,7 @@ import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +58,7 @@ import app.wayfinder.ui.Ph
 @Composable
 fun LayerToggles(
     showTransitToggle: Boolean,
+    transitLabel: String,
     transitOn: Boolean,
     transitLoading: Boolean,
     showBikeToggle: Boolean,
@@ -66,7 +70,7 @@ fun LayerToggles(
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier) {
         if (showTransitToggle) {
-            LayerToggle("Public transport", if (transitOn) Ph.Filled.Bus else Ph.Bus, transitOn, transitLoading, onTransit)
+            LayerToggle(transitLabel, if (transitOn) Ph.Filled.Bus else Ph.Bus, transitOn, transitLoading, onTransit)
         }
         if (showBikeToggle) {
             LayerToggle("Bike routes", if (bikeOn) Ph.Filled.Bicycle else Ph.Bicycle, bikeOn, bikeLoading, onBike)
@@ -116,94 +120,98 @@ fun TransitPanel(
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
     Surface(
         shape = RoundedCornerShape(28.dp),
         color = colors.surfaceContainerHigh,
         shadowElevation = 6.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.padding(vertical = 14.dp),
-        ) {
-            // Header
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().height(24.dp).padding(horizontal = 20.dp),
-            ) {
-                Text(
-                    if (selected != null) "Selected line" else "Lines in view",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (loading) {
-                    LoadingIndicator(Modifier.size(28.dp))
-                } else if (selected == null) {
-                    Text(
-                        "${lines.size}",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.onSurfaceVariant,
-                    )
-                }
-            }
-
-            // Mode filter — connected button group
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-            ) {
-                val all = TransitMode.entries
-                all.forEachIndexed { index, mode ->
-                    val checked = mode in modes
-                    ToggleButton(
-                        checked = checked,
-                        onCheckedChange = { onToggleMode(mode) },
-                        shapes = when (index) {
-                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                            all.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                        },
-                        colors = ToggleButtonDefaults.toggleButtonColors(
-                            containerColor = colors.surfaceContainerHighest,
-                            contentColor = colors.onSurfaceVariant,
-                            checkedContainerColor = Color(mode.colorArgb),
-                            checkedContentColor = Color.White,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        modifier = Modifier.height(40.dp),
+        AnimatedContent(
+            targetState = selected,
+            transitionSpec = {
+                (fadeIn(motion.defaultEffectsSpec()) togetherWith fadeOut(motion.fastEffectsSpec()))
+                    .using(SizeTransform(clip = false))
+            },
+            label = "panel",
+        ) { picked ->
+            if (picked != null) {
+                SelectedLine(picked, stops = null, onClose = { onLine(picked.key) })
+            } else {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(top = 16.dp, bottom = 14.dp),
+                ) {
+                    // Header: title + count capsule (or the expressive loading indicator)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().height(28.dp).padding(horizontal = 20.dp),
                     ) {
-                        Icon(modeIcon(mode), contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(mode.label, style = MaterialTheme.typography.labelLarge)
+                        Text("Lines in view", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        if (loading) {
+                            LoadingIndicator(Modifier.size(28.dp))
+                        } else {
+                            Text(
+                                "${lines.size}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = colors.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.surfaceContainerHighest)
+                                    .padding(horizontal = 10.dp, vertical = 3.dp),
+                            )
+                        }
                     }
-                }
-            }
 
-            // Lines, or the picked line
-            AnimatedContent(
-                targetState = selected,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                label = "lines",
-            ) { picked ->
-                when {
-                    picked != null -> SelectedLine(picked, onClose = { onLine(picked.key) })
-                    lines.isEmpty() -> Text(
-                        if (loading) "Loading lines…" else "No lines here. Move or zoom the map.",
-                        style = MaterialTheme.typography.bodyMedium,
+                    // Mode filter — connected button group
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                    ) {
+                        val all = TransitMode.entries
+                        all.forEachIndexed { index, mode ->
+                            ToggleButton(
+                                checked = mode in modes,
+                                onCheckedChange = { onToggleMode(mode) },
+                                shapes = when (index) {
+                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                    all.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                },
+                                colors = ToggleButtonDefaults.toggleButtonColors(
+                                    containerColor = colors.surfaceContainerHighest,
+                                    contentColor = colors.onSurfaceVariant,
+                                    checkedContainerColor = Color(mode.colorArgb),
+                                    checkedContentColor = Color.White,
+                                ),
+                                contentPadding = PaddingValues(start = 12.dp, end = 14.dp),
+                                modifier = Modifier.height(40.dp),
+                            ) {
+                                Icon(modeIcon(mode), contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(mode.label, style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+
+                    if (lines.isEmpty()) {
+                        Text(
+                            if (loading) "Loading lines…" else "No lines here. Move or zoom the map.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                        )
+                    } else {
+                        LineRow(lines, onLine)
+                    }
+
+                    Text(
+                        hint ?: "Tap a line to follow it on the map",
+                        style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp).height(32.dp),
+                        modifier = Modifier.padding(horizontal = 20.dp),
                     )
-                    else -> LineRow(lines, onLine)
                 }
-            }
-
-            if (hint != null) {
-                Text(
-                    hint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                )
             }
         }
     }
@@ -270,32 +278,61 @@ private fun LinePill(line: LineInfo, onClick: (() -> Unit)?, outlined: Boolean =
 }
 
 @Composable
-private fun SelectedLine(line: LineInfo, onClose: () -> Unit) {
+private fun SelectedLine(line: LineInfo, stops: Int?, onClose: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
     ) {
-        LinePill(line, onClick = null)
-        Spacer(Modifier.width(12.dp))
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .defaultMinSize(minWidth = 64.dp)
+                .height(48.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(line.color))
+                .padding(horizontal = 12.dp),
+        ) {
+            Text(
+                line.ref,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight(750)),
+                color = Color(line.textColor),
+                maxLines = 1,
+            )
+        }
+        Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 line.name.ifBlank { "Line ${line.ref}" },
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             line.mode?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(modeIcon(it), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+                    Icon(modeIcon(it), contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text(it.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        singular(it) + (stops?.let { n -> " · $n stops in view" } ?: ""),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant,
+                    )
                 }
             }
         }
-        FilledTonalIconButton(onClick = onClose) {
+        FilledTonalIconButton(onClick = onClose, shapes = IconButtonDefaults.shapes()) {
             Icon(Ph.X, contentDescription = "Show all lines", modifier = Modifier.size(20.dp))
         }
     }
+}
+
+private fun singular(mode: TransitMode) = when (mode) {
+    TransitMode.Train -> "Train"
+    TransitMode.Metro -> "Metro"
+    TransitMode.Tram -> "Tram"
+    TransitMode.Bus -> "Bus"
+    TransitMode.Ferry -> "Ferry"
+    TransitMode.Other -> "Transit"
 }
 
 private fun modeIcon(mode: TransitMode): ImageVector = when (mode) {

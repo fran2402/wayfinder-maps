@@ -92,7 +92,7 @@ object MapStyle {
     /** Layers shown only while the public-transport overlay is switched on. */
     val networkLayers = listOf(
         "net-tiles-casing", "net-tiles", "net-lines-casing", "net-lines",
-        "net-stops", "net-line-labels", "net-stations",
+        "net-stops", "net-line-labels", "net-stations", "net-focus-casing", "net-focus", "net-stop-labels",
     )
 
     /** Layers whose opacity follows the highlighted line. */
@@ -290,6 +290,16 @@ object MapStyle {
                     18, arr("case", arr("<=", get("rank"), 1), 5.0, 7.5)),
             )))
 
+        // A picked line: drawn thicker on top; filtered to it at runtime (nothing by default).
+        add(layer("net-focus-casing", "line", source = SRC_NETWORK, visibility = netVis,
+            filter = arr("boolean", false),
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj("line-color" to p.surface, "line-width" to zoomLinear(9 to 6.0, 13 to 11.0, 18 to 18.0))))
+        add(layer("net-focus", "line", source = SRC_NETWORK, visibility = netVis,
+            filter = arr("boolean", false),
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj("line-color" to get("color"), "line-width" to zoomLinear(9 to 3.5, 13 to 6.5, 18 to 11.0))))
+
         // ---------- Route ----------
         add(layer("route-alt", "line", source = SRC_ROUTE_ALT,
             layout = obj("line-join" to "round", "line-cap" to "round"),
@@ -434,6 +444,19 @@ object MapStyle {
                 "text-halo-color" to get("color"),
                 "text-halo-width" to 2.5,
             )))
+
+        add(layer("net-stop-labels", "symbol", source = SRC_NETWORK_STOPS, minzoom = 11.0, visibility = netVis,
+            filter = arr("boolean", false),
+            layout = obj(
+                "text-field" to get("name"),
+                "text-font" to fonts(MEDIUM),
+                "text-size" to 12,
+                "text-anchor" to "left",
+                "text-offset" to arr("literal", arr(0.8, 0.0)),
+                "text-max-width" to 9,
+                "text-optional" to true,
+            ),
+            paint = textPaint(p.label, p, haloWidth = 1.8)))
 
         // Stations: always visible from mid zoom, emphasised when the network is on.
         add(layer("station", "symbol", "poi", minzoom = 12.0,
