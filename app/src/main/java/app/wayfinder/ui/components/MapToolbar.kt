@@ -44,6 +44,8 @@ fun MapToolbar(
     hasLocation: Boolean,
     onLines: () -> Unit,
     onBikes: () -> Unit,
+    settingsOn: Boolean,
+    onSettings: () -> Unit,
     onLocate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -64,6 +66,19 @@ fun MapToolbar(
                 ) {
                     ToolbarToggle("Lines", if (linesOn) Ph.Filled.Bus else Ph.Bus, linesOn, linesLoading, onLines, Modifier.weight(1f))
                     ToolbarToggle("Bikes", if (bikesOn) Ph.Filled.Bicycle else Ph.Bicycle, bikesOn, bikesLoading, onBikes, Modifier.weight(1f))
+                    androidx.compose.material3.FilledIconToggleButton(
+                        checked = settingsOn,
+                        onCheckedChange = { onSettings() },
+                        colors = androidx.compose.material3.IconButtonDefaults.filledIconToggleButtonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = colors.onPrimaryContainer,
+                            checkedContainerColor = colors.primary,
+                            checkedContentColor = colors.onPrimary,
+                        ),
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(Ph.SlidersHorizontal, contentDescription = "Map settings", modifier = Modifier.size(22.dp))
+                    }
                 }
             }
         } else {

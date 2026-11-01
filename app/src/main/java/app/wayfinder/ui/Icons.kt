@@ -17,6 +17,8 @@ import com.adamglin.phosphoricons.regular.CaretDown as RCaretDown
 import com.adamglin.phosphoricons.regular.Train as RTrain
 import com.adamglin.phosphoricons.regular.TrainSimple as RTrainSimple
 import com.adamglin.phosphoricons.regular.Bus as RBus
+import com.adamglin.phosphoricons.regular.SlidersHorizontal as RSlidersHorizontal
+import com.adamglin.phosphoricons.regular.Mountains as RMountains
 import com.adamglin.phosphoricons.regular.MapTrifold as RMapTrifold
 import com.adamglin.phosphoricons.regular.ArrowBendUpLeft as RArrowBendUpLeft
 import com.adamglin.phosphoricons.regular.ArrowBendUpRight as RArrowBendUpRight
@@ -69,6 +71,7 @@ import com.adamglin.phosphoricons.fill.GpsFix as FGpsFix
 import com.adamglin.phosphoricons.fill.FlagCheckered as FFlagCheckered
 import com.adamglin.phosphoricons.bold.X as BX
 import com.adamglin.phosphoricons.bold.Plus as BPlus
+import com.adamglin.phosphoricons.bold.Check as BCheck
 import com.adamglin.phosphoricons.bold.ArrowLeft as BArrowLeft
 
 /** Phosphor icons used across the app (https://phosphoricons.com). */
@@ -85,6 +88,8 @@ object Ph {
     val Train: ImageVector get() = PhosphorIcons.Regular.RTrain
     val TrainSimple: ImageVector get() = PhosphorIcons.Regular.RTrainSimple
     val Bus: ImageVector get() = PhosphorIcons.Regular.RBus
+    val SlidersHorizontal: ImageVector get() = PhosphorIcons.Regular.RSlidersHorizontal
+    val Mountains: ImageVector get() = PhosphorIcons.Regular.RMountains
     val MapTrifold: ImageVector get() = PhosphorIcons.Regular.RMapTrifold
     val ArrowBendUpLeft: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpLeft
     val ArrowBendUpRight: ImageVector get() = PhosphorIcons.Regular.RArrowBendUpRight
@@ -141,6 +146,7 @@ object Ph {
 
     object Strong {
         val Plus: ImageVector get() = PhosphorIcons.Bold.BPlus
+        val Check: ImageVector get() = PhosphorIcons.Bold.BCheck
         val X: ImageVector get() = PhosphorIcons.Bold.BX
         val ArrowLeft: ImageVector get() = PhosphorIcons.Bold.BArrowLeft
     }

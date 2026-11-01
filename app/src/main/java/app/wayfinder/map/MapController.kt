@@ -8,6 +8,7 @@ import app.wayfinder.data.LatLon
 import app.wayfinder.data.LegMode
 import app.wayfinder.data.Overlays
 import app.wayfinder.data.TransitMode
+import app.wayfinder.data.TransitRoutes
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -59,6 +60,27 @@ class MapController(private val context: Context) {
     private var transitStops: String = Overlays.EMPTY
     private var transitPills: List<app.wayfinder.data.LineInfo> = emptyList()
     private val pillRenderer = LinePills(context)
+    /** Badge images already in the current style, so each is added once. */
+    private val pillsInStyle = HashSet<String>()
+
+    /** Base map options from map settings. */
+    data class BaseLayers(val ferries: Boolean, val terrain: Boolean, val relief: Boolean)
+    private var baseLayers = BaseLayers(ferries = false, terrain = true, relief = true)
+
+    fun setBaseLayers(layers: BaseLayers) {
+        baseLayers = layers
+        applyBaseLayers()
+    }
+
+    private fun applyBaseLayers() {
+        val s = style ?: return
+        fun vis(ids: List<String>, on: Boolean) = ids.forEach {
+            s.getLayer(it)?.setProperties(PropertyFactory.visibility(if (on) Property.VISIBLE else Property.NONE))
+        }
+        vis(MapStyle.ferryLayers, baseLayers.ferries)
+        vis(MapStyle.terrainLayers, baseLayers.terrain)
+        vis(MapStyle.reliefLayers, baseLayers.relief)
+    }
     private var bikeLines: String = Overlays.EMPTY
     private var networkVisible = false
     private var bikeVisible = false
@@ -84,8 +106,11 @@ class MapController(private val context: Context) {
         if (key == styleKey) return
         styleKey = key
         style = null
+        pillsInStyle.clear()
         map.setStyle(Style.Builder().fromJson(MapStyle.build(palette, networkVisible, bikeVisible))) { loaded ->
             style = loaded
+            pillsInStyle.clear()
+            applyBaseLayers()
             MapIcons.install(context, loaded, palette)
             setNetworkVisible(networkVisible)
             setBikeVisible(bikeVisible)
@@ -232,8 +257,10 @@ class MapController(private val context: Context) {
     }
 
     private fun addPills(s: Style) {
-        if (transitPills.isEmpty()) return
-        runCatching { s.addImages(pillRenderer.imagesFor(transitPills)) }
+        val missing = transitPills.filter { TransitRoutes.pillId(it.key) !in pillsInStyle }.take(400)
+        if (missing.isEmpty()) return
+        val images = pillRenderer.imagesFor(missing)
+        runCatching { s.addImages(images) }.onSuccess { pillsInStyle += images.keys }
     }
 
     private fun drawOverlays() {

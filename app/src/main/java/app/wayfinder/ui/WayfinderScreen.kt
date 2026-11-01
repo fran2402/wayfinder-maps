@@ -78,15 +78,17 @@ import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
 import app.wayfinder.ui.components.SearchOverlay
 import app.wayfinder.ui.components.SearchPill
+import app.wayfinder.ui.components.SettingsSheet
 import app.wayfinder.ui.components.TripCard
 import kotlin.math.roundToInt
 
 /** What the bottom sheet is showing. */
-private enum class SheetMode { None, Place, Trip, Lines, Line }
+private enum class SheetMode { None, Place, Settings, Trip, Lines, Line }
 
 private fun peekFor(mode: SheetMode): Dp = when (mode) {
     SheetMode.Trip -> 440.dp
     SheetMode.Place -> 260.dp
+    SheetMode.Settings -> 340.dp
     SheetMode.Lines -> 400.dp
     SheetMode.Line -> 380.dp
     SheetMode.None -> 0.dp
@@ -123,6 +125,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     val picked = vm.highlightedLoaded
     val sheetMode = when {
         vm.tappedPlace != null -> SheetMode.Place
+        vm.settingsOpen && !vm.planning -> SheetMode.Settings
         vm.planning -> SheetMode.Trip
         vm.transitVisible && picked != null -> SheetMode.Line
         vm.transitVisible -> SheetMode.Lines
@@ -142,6 +145,9 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.transitVisible, mapReady) { controller.setNetworkVisible(vm.transitVisible) }
     LaunchedEffect(vm.bikeVisible, mapReady) { controller.setBikeVisible(vm.bikeVisible) }
+    LaunchedEffect(vm.showFerries, vm.showTerrain, vm.showRelief, mapReady) {
+        controller.setBaseLayers(MapController.BaseLayers(vm.showFerries, vm.showTerrain, vm.showRelief))
+    }
     LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) {
         controller.setTransit(vm.transitLines, vm.transitStops, vm.transitPills)
     }
@@ -226,6 +232,15 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                             onClose = vm::closePlace,
                         )
                     }
+                    SheetMode.Settings -> SettingsSheet(
+                        ferries = vm.showFerries,
+                        terrain = vm.showTerrain,
+                        relief = vm.showRelief,
+                        onFerries = vm::setFerries,
+                        onTerrain = vm::setTerrain,
+                        onRelief = vm::setRelief,
+                        onClose = vm::toggleSettings,
+                    )
                     SheetMode.Trip -> if (vm.multiStop) MultiTripSheet(
                         mode = vm.mode,
                         segments = vm.segments,
@@ -383,6 +398,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                     hasLocation = vm.myLocation != null,
                     onLines = { syncViewport(); vm.toggleTransit() },
                     onBikes = { syncViewport(); vm.toggleBike() },
+                    settingsOn = vm.settingsOpen,
+                    onSettings = vm::toggleSettings,
                     onLocate = {
                         val loc = vm.myLocation
                         when {
@@ -415,7 +432,8 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
     BackHandler(enabled = vm.searchTarget != null) { vm.closeSearch() }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace != null) { vm.closePlace() }
-    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.settingsOpen && !vm.planning) { vm.toggleSettings() }
+    BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && !vm.settingsOpen && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
     BackHandler(enabled = vm.searchTarget == null && vm.tappedPlace == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
 }
 

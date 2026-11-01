@@ -31,7 +31,7 @@ class LinePills(private val context: Context) {
     /** Bitmaps for [lines] that the current style does not have yet, keyed by image name. */
     fun imagesFor(lines: List<LineInfo>): HashMap<String, Bitmap> {
         val out = HashMap<String, Bitmap>()
-        for (line in lines.take(600)) {
+        for (line in lines) {
             val id = TransitRoutes.pillId(line.key)
             out[id] = cache.getOrPut(id) { render(line) }
         }

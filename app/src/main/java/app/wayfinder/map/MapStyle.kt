@@ -108,6 +108,10 @@ object MapStyle {
     /** Layers whose opacity follows the highlighted line. */
     val transitLineLayers = listOf("net-lines-casing", "net-lines")
 
+    val ferryLayers = listOf("ferry-route", "ferry-label")
+    val terrainLayers = listOf("hillshade")
+    val reliefLayers = listOf("elevation-tint", "depth-tint")
+
     /** Layers shown only while the bike-route overlay is switched on. */
     val bikeLayers = listOf("bike-tiles-casing", "bike-tiles", "bike-lines-casing", "bike-lines", "bike-labels")
 
@@ -187,10 +191,9 @@ object MapStyle {
             paint = obj("line-color" to p.waterLine, "line-width" to zoomLinear(12 to 0.5, 18 to 2.0),
                 "line-blur" to 1.0)))
 
-        // Ferry routes from OpenStreetMap — always on, so crossings show even where no
-        // timetable data exists.
+        // Ferry routes from OpenStreetMap (off unless enabled in map settings).
         val ferryColor = if (p.dark) "#5FC0F0" else "#0068A8"
-        add(layer("ferry-route", "line", "transportation", minzoom = 4.0,
+        add(layer("ferry-route", "line", "transportation", minzoom = 4.0, visibility = "none",
             filter = eq("class", "ferry"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
             paint = obj(
@@ -199,7 +202,7 @@ object MapStyle {
                 "line-width" to zoomLinear(4 to 0.8, 10 to 1.6, 16 to 3.0),
                 "line-dasharray" to arr("literal", arr(3.0, 2.5)),
             )))
-        add(layer("ferry-label", "symbol", "transportation_name", minzoom = 9.0,
+        add(layer("ferry-label", "symbol", "transportation_name", minzoom = 9.0, visibility = "none",
             filter = eq("class", "ferry"),
             layout = obj(
                 "symbol-placement" to "line",
@@ -695,9 +698,11 @@ object MapStyle {
                     "maxzoom" to 13,
                     "attribution" to "Terrain: Mapzen, AWS Open Data",
                 ),
-                SRC_NETWORK to geojson(),
-                SRC_NETWORK_STOPS to geojson(),
-                SRC_BIKE to geojson(),
+                // Overlay sources are big: tile them only up to z14 (MapLibre over-zooms beyond),
+                // which makes updates far cheaper.
+                SRC_NETWORK to geojson(maxzoom = 14),
+                SRC_NETWORK_STOPS to geojson(maxzoom = 14),
+                SRC_BIKE to geojson(maxzoom = 14),
                 SRC_ROUTE to geojson(),
                 SRC_ROUTE_ALT to geojson(),
                 SRC_ROUTE_STOPS to geojson(),
@@ -891,9 +896,12 @@ object MapStyle {
         "text-halo-blur" to 0.5,
     )
 
-    private fun geojson() = obj(
+    private fun geojson(maxzoom: Int? = null) = obj(
         "type" to "geojson",
         "data" to obj("type" to "FeatureCollection", "features" to JSONArray()),
+        "maxzoom" to maxzoom,
+        "tolerance" to if (maxzoom != null) 0.5 else null,
+        "buffer" to if (maxzoom != null) 32 else null,
     )
 
     private fun fill(id: String, sourceLayer: String, filter: JSONArray?, color: String, opacity: Any = 1.0) =

@@ -3,7 +3,8 @@ package app.wayfinder.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.wayfinder.data.Bounds
 import app.wayfinder.data.Geocoder
@@ -50,7 +51,24 @@ data class TripSegment(
 /** A place the user tapped on the map (restaurant, shop, station…). */
 data class PlaceDetail(val place: Place, val category: String?, val poiClass: String?)
 
-class WayfinderViewModel : ViewModel() {
+class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
+
+    // ---------- Map settings (persisted) ----------
+    private val prefs = app.getSharedPreferences("map_settings", android.content.Context.MODE_PRIVATE)
+    var showFerries by mutableStateOf(prefs.getBoolean("ferries", false))
+        private set
+    var showTerrain by mutableStateOf(prefs.getBoolean("terrain", true))
+        private set
+    var showRelief by mutableStateOf(prefs.getBoolean("relief", true))
+        private set
+    var settingsOpen by mutableStateOf(false)
+        private set
+
+    fun setFerries(on: Boolean) { showFerries = on; prefs.edit().putBoolean("ferries", on).apply() }
+    fun setTerrain(on: Boolean) { showTerrain = on; prefs.edit().putBoolean("terrain", on).apply() }
+    fun setRelief(on: Boolean) { showRelief = on; prefs.edit().putBoolean("relief", on).apply() }
+    fun toggleSettings() { settingsOpen = !settingsOpen }
+
 
     // ---------- Search ----------
     var searchTarget by mutableStateOf<SearchTarget?>(null)
@@ -636,7 +654,7 @@ class WayfinderViewModel : ViewModel() {
                     val bounds = Tiles.bounds(next.z, next.x, next.y)
                     // Ask the server for much more detail than the tile's zoom (it hides metro and trams
                     // until far in), but keep buses for street-level views only.
-                    val data = TransitRoutes.loadTile(bounds, (next.z + 4).coerceAtMost(15), includeBus = next.z >= 10)
+                    val data = TransitRoutes.loadTile(bounds, (next.z + 3).coerceAtMost(15), includeBus = next.z >= 10)
                     tileCache[next] = data
                     tileFailedAt.remove(next)
                     overlayError = null
@@ -662,12 +680,15 @@ class WayfinderViewModel : ViewModel() {
         }
     }
 
+    /** Coalesces bursts (several tiles arriving, camera moves) into one merge + map update. */
     private fun rebuildTransit() {
-        val keys = neededTiles
-        val tiles = keys.mapNotNull { tileCache[it] }
-        shownTiles = keys.filter { it in tileCache }.toSet()
         rebuildJob?.cancel()
         rebuildJob = viewModelScope.launch {
+            delay(250)
+            val keys = neededTiles
+            val tiles = keys.mapNotNull { tileCache[it] }
+            if (tiles.isEmpty()) return@launch
+            shownTiles = keys.filter { it in tileCache }.toSet()
             val data = withContext(storeThread) { TransitRoutes.merge(tiles) }
             transitData = data
             transitPills = data.routes.map { it.info }

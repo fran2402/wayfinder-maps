@@ -62,7 +62,7 @@ object TransitRoutes {
     private const val URL = "https://api.transitous.org/api/experimental/map/routes"
 
     /** Upper bound on routes kept per tile. */
-    private const val MAX_ROUTES = 1200
+    private const val MAX_ROUTES = 800
 
     /** Straight two-point segments longer than this are chords, not track. */
     private const val MAX_CHORD_M = 1000.0
@@ -107,6 +107,8 @@ object TransitRoutes {
         val text: Int?,
         /** Triples of (fromStop, toStop, polyline). */
         val segments: IntArray,
+        /** "NONE" means the server has no real shape and joins stops with straight lines. */
+        val pathSource: String,
     )
 
     private class Raw {
@@ -145,10 +147,12 @@ object TransitRoutes {
             var color: Int? = null
             var text: Int? = null
             var segments = IntArray(0)
+            var pathSource = ""
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
                     "mode" -> mode = r.nextStringOrEmpty()
+                    "pathSource" -> pathSource = r.nextStringOrEmpty()
                     "transitRoutes" -> {
                         r.beginArray()
                         while (r.hasNext()) {
@@ -192,7 +196,7 @@ object TransitRoutes {
                 }
             }
             r.endObject()
-            raw.routes += RawRoute(mode, ref, name, color, text, segments)
+            raw.routes += RawRoute(mode, ref, name, color, text, segments, pathSource)
         }
         r.endArray()
     }
@@ -262,6 +266,8 @@ object TransitRoutes {
 
     private fun build(raw: Raw, includeBus: Boolean): TileData {
         val ordered = raw.routes
+            // Routes without real shapes would be drawn as straight chords between stops.
+            .filter { it.pathSource != "NONE" }
             .filter { includeBus || classify(it.mode).first != TransitMode.Bus }
             .sortedByDescending { Palette.rank(classify(it.mode).second, "") }
         val out = ArrayList<TileRoute>()
