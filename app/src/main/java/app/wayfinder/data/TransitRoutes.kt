@@ -565,6 +565,8 @@ object TransitRoutes {
     }
 
     fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false, overlapZoom: Double? = null): TransitData {
+        // Decimals the map needs: 5 (about 1 m) close in, 4 (about 10 m) when zoomed out.
+        val prec = if (overlapZoom != null && overlapZoom < 11.0) 4 else 5
         class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()
             val ids = HashSet<Int>()
@@ -635,7 +637,7 @@ object TransitRoutes {
                     var k = 0
                     while (k < pts.size) {
                         if (k > 0) lines.append(',')
-                        lines.append('[').appendCoord(pts[k + 1]).append(',').appendCoord(pts[k]).append(']')
+                        lines.append('[').appendCoord(pts[k + 1], prec).append(',').appendCoord(pts[k], prec).append(']')
                         k += 2
                     }
                     lines.append(']')
@@ -932,14 +934,23 @@ object TransitRoutes {
     }
 
     /** Appends a coordinate with 5 decimals (~1 m) without String.format. */
-    private fun StringBuilder.appendCoord(v: Float): StringBuilder {
-        val scaled = (v.toDouble() * 100000.0).roundToLong()
+    private val POW10 = longArrayOf(1, 10, 100, 1_000, 10_000, 100_000, 1_000_000)
+
+    /** Appends a coordinate with [digits] decimals and no trailing zeros, without allocating. */
+    private fun StringBuilder.appendCoord(v: Float, digits: Int = 5): StringBuilder {
+        val p = POW10[digits]
+        val scaled = (v.toDouble() * p).roundToLong()
         if (scaled < 0) append('-')
         val a = abs(scaled)
-        append(a / 100000).append('.')
-        val frac = (a % 100000).toString()
-        for (z in frac.length until 5) append('0')
-        return append(frac)
+        append(a / p)
+        var frac = a % p
+        if (frac == 0L) return this
+        var d = digits
+        while (frac % 10 == 0L) { frac /= 10; d-- }
+        append('.')
+        var div = POW10[d - 1]
+        while (div > 0) { append(('0' + (frac / div % 10).toInt())); div /= 10 }
+        return this
     }
 
     private fun quote(s: String): String = org.json.JSONObject.quote(s)

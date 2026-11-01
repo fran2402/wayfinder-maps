@@ -262,14 +262,22 @@ class MapController(private val context: Context) {
 
     // ---------- Overlays ----------
 
+    private var sentLines: String? = null
+    private var sentStops: String? = null
+
     fun setTransit(lines: String, stops: String, pills: List<app.wayfinder.data.LineInfo>) {
         transitLines = lines
         transitStops = stops
         transitPills = pills
         val s = style ?: return
         addPills(s)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(lines)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(stops)
+        // Re-sending identical data makes MapLibre re-tile it all: skip what hasn't changed.
+        if (lines !== sentLines && lines != sentLines) {
+            s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(lines); sentLines = lines
+        }
+        if (stops !== sentStops && stops != sentStops) {
+            s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(stops); sentStops = stops
+        }
     }
 
     private var selectedLine: String? = null
@@ -296,8 +304,8 @@ class MapController(private val context: Context) {
     private fun drawOverlays() {
         val s = style ?: return
         addPills(s)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transitLines)
-        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transitStops)
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transitLines); sentLines = transitLines
+        s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transitStops); sentStops = transitStops
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bikeLines)
         selectedLine?.let { s.getSourceAs<GeoJsonSource>(MapStyle.SRC_SELECTED)?.setGeoJson(it) }
     }

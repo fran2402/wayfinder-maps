@@ -87,6 +87,7 @@ class DownloadService : Service() {
             b.setContentText(
                 when {
                     s.finishing -> "Preparing zoomed-out views…"
+                    s.pack -> "Downloading · ${s.done} of ${s.total} MB"
                     else -> "${s.done} of ${s.total} squares · bike routes ${s.bikesDone}"
                 }
             )

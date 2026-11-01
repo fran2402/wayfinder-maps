@@ -103,7 +103,8 @@ class OfflineTransit(context: Context) {
             area = view,
         )
 
-        private const val VERSION = 4
+        private val VERSION = TileCodec.VERSION
+        private val PACK_NAME = Regex("^(bike_)?\\d{1,2}_\\d{1,7}_\\d{1,7}\\.bin$")
 
         /** Server zoom for downloads: Transitous includes every mode from zoom 11 up. */
         private const val SERVER_ZOOM = 14
@@ -147,7 +148,7 @@ class OfflineTransit(context: Context) {
 
     /** Names of tile files on disk, so lookups never touch the file system. */
     private val present: MutableSet<String> = java.util.Collections.synchronizedSet(
-        HashSet(dir.list()?.filter { it.endsWith(".bin") || it.endsWith(".json.gz") }.orEmpty())
+        HashSet(dir.list()?.filter { it.endsWith(".bin") }.orEmpty())
     )
 
     fun has(level: Level, x: Int, y: Int) = name(level, x, y) in present
@@ -158,7 +159,7 @@ class OfflineTransit(context: Context) {
         val f = file(level, x, y)
         if (!f.exists()) return@withContext null
         runCatching {
-            val t = DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream()), 1 shl 16)).use { decode(it) }
+            val t = readCodec(f)
             // Drops stop-to-stop jumps, including in data saved before that was filtered at download.
             TransitRoutes.clean(t, toleranceMetres(level.detailZoom))
         }.getOrNull()
@@ -166,7 +167,7 @@ class OfflineTransit(context: Context) {
 
     suspend fun write(level: Level, x: Int, y: Int, data: TileData) = withContext(Dispatchers.IO) {
         val tmp = File(dir, "${level.z}_${x}_$y.tmp")
-        DataOutputStream(BufferedOutputStream(GZIPOutputStream(tmp.outputStream()), 1 shl 16)).use { encode(data, it) }
+        writeCodec(tmp, data)
         tmp.renameTo(file(level, x, y))
         present += name(level, x, y)
     }
@@ -175,18 +176,15 @@ class OfflineTransit(context: Context) {
 
     // ---------- Bike routes ----------
 
-    private fun bikeName(x: Int, y: Int) = "bike_${Level.City.z}_${x}_$y.json"
-    private fun bikeFile(x: Int, y: Int) = File(dir, "${bikeName(x, y)}.gz")
+    private fun bikeName(x: Int, y: Int) = "bike_${Level.City.z}_${x}_$y.bin"
+    private fun bikeFile(x: Int, y: Int) = File(dir, bikeName(x, y))
 
-    fun hasBike(x: Int, y: Int) = "${bikeName(x, y)}.gz" in present
+    fun hasBike(x: Int, y: Int) = bikeName(x, y) in present
 
-    /** Saved Overpass answers (one per piece) for a download square, or null if not downloaded. */
-    suspend fun readBike(x: Int, y: Int): List<JSONObject>? = withContext(Dispatchers.IO) {
+    /** Saved bike routes of a download square, or null if not downloaded. */
+    suspend fun readBike(x: Int, y: Int): TileData? = withContext(Dispatchers.IO) {
         if (!hasBike(x, y)) return@withContext null
-        runCatching {
-            val arr = JSONArray(GZIPInputStream(bikeFile(x, y).inputStream()).bufferedReader().use { it.readText() })
-            List(arr.length()) { arr.getJSONObject(it) }
-        }.getOrNull()
+        runCatching { readCodec(bikeFile(x, y)) }.getOrNull()
     }
 
     private val bikeGate = Semaphore(2) // Overpass allows few parallel queries per client
@@ -194,13 +192,13 @@ class OfflineTransit(context: Context) {
     /** Downloads the bike routes of one square, splitting it when Overpass gives up on it. */
     suspend fun downloadBike(x: Int, y: Int, force: Boolean = false, onProblem: (String) -> Unit) {
         if (!force && hasBike(x, y)) return
-        val answers = java.util.Collections.synchronizedList(ArrayList<JSONObject>())
+        val builder = TransitRoutes.TileBuilder()
         suspend fun get(area: Bounds, depth: Int) {
             var tries = 0
             while (true) {
-                val res = bikeGate.withPermit { runCatching { Overpass.fetchLarge(Tier.Bike, area) } }
+                val res = bikeGate.withPermit { runCatching { BikeRoutes.fetch(area, large = true) } }
                 val e = res.exceptionOrNull()
-                if (e == null) { answers += res.getOrThrow(); return }
+                if (e == null) { synchronized(builder) { builder.addAll(res.getOrThrow()) }; return }
                 if (e is CancellationException) throw e
                 onProblem("bike routes: " + (e.message?.take(40) ?: "failed"))
                 if (depth < 3) {
@@ -215,9 +213,9 @@ class OfflineTransit(context: Context) {
         get(Tiles.bounds(Level.City.z, x, y), 0)
         withContext(Dispatchers.IO) {
             val tmp = File(dir, "${bikeName(x, y)}.tmp")
-            GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { it.write(JSONArray(answers).toString()) }
+            writeCodec(tmp, builder.build())
             tmp.renameTo(bikeFile(x, y))
-            present += "${bikeName(x, y)}.gz"
+            present += bikeName(x, y)
         }
     }
 
@@ -449,7 +447,7 @@ class OfflineTransit(context: Context) {
         tilesOf(target.region).filter { it !in keep }.forEach { (l, x, y) ->
             file(l, x, y).delete()
             present -= name(l, x, y)
-            if (l == Level.City) { bikeFile(x, y).delete(); present -= "${bikeName(x, y)}.gz" }
+            if (l == Level.City) { bikeFile(x, y).delete(); present -= bikeName(x, y) }
         }
         index.writeText(JSONArray().toString())
         all.filter { it.region.id != id }.forEach { record(it) }
@@ -496,7 +494,7 @@ class OfflineTransit(context: Context) {
             fun drop(l: Level, tx: Int, ty: Int) { file(l, tx, ty).delete(); present -= name(l, tx, ty) }
             drop(Level.City, x, y)
             for (i in 0 until k) for (j in 0 until k) drop(Level.Street, x * k + i, y * k + j)
-            bikeFile(x, y).delete(); present -= "${bikeName(x, y)}.gz"
+            bikeFile(x, y).delete(); present -= bikeName(x, y)
             rails += (x shr 2) to (y shr 2)
         }
         for ((x, y) in rails) {
@@ -511,53 +509,29 @@ class OfflineTransit(context: Context) {
 
     // ---------- Encoding ----------
 
-    private fun encode(t: TileData, out: DataOutputStream) {
-        out.writeInt(VERSION)
-        out.writeBoolean(t.zoomFiltered)
-        out.writeInt(t.routes.size)
-        for (r in t.routes) {
-            out.writeUTF(r.key); out.writeUTF(r.mode.name); out.writeUTF(r.osmRoute)
-            out.writeUTF(r.ref); out.writeUTF(r.name.take(200))
-            out.writeInt(r.color); out.writeInt(r.text); out.writeInt(r.rank)
-            out.writeDouble(r.bounds.south); out.writeDouble(r.bounds.west)
-            out.writeDouble(r.bounds.north); out.writeDouble(r.bounds.east)
-            out.writeInt(r.parts.size)
-            r.parts.forEachIndexed { i, p ->
-                out.writeInt(r.partIds[i])
-                out.writeInt(p.size)
-                p.forEach { out.writeFloat(it) }
-            }
-            out.writeInt(r.stops.size)
-            r.stops.forEach { s -> out.writeUTF(s.id); out.writeUTF(s.name.take(200)); out.writeDouble(s.lat); out.writeDouble(s.lon) }
-            out.writeInt(r.routeIdx.size)
-            r.routeIdx.forEach(out::writeInt)
-        }
+    private fun readCodec(f: File): TileData =
+        TileCodec.decode(GZIPInputStream(f.inputStream(), 1 shl 16).use { it.readBytes() })
+
+    private fun writeCodec(f: File, t: TileData) {
+        java.util.zip.GZIPOutputStream(f.outputStream(), 1 shl 16).use { it.write(TileCodec.encode(t)) }
     }
 
-    private fun decode(inp: DataInputStream): TileData {
-        val version = inp.readInt()
-        require(version == VERSION)
-        val zoomFiltered = inp.readBoolean()
-        val n = inp.readInt()
-        val routes = ArrayList<TileRoute>(n)
-        repeat(n) {
-            val key = inp.readUTF(); val mode = TransitMode.valueOf(inp.readUTF()); val osmRoute = inp.readUTF()
-            val ref = inp.readUTF(); val name = inp.readUTF()
-            val color = inp.readInt(); val text = inp.readInt(); val rank = inp.readInt()
-            val bounds = Bounds(inp.readDouble(), inp.readDouble(), inp.readDouble(), inp.readDouble())
-            val pc = inp.readInt()
-            val parts = ArrayList<FloatArray>(pc)
-            val ids = IntArray(pc)
-            for (i in 0 until pc) {
-                ids[i] = inp.readInt()
-                val len = inp.readInt()
-                parts += FloatArray(len) { inp.readFloat() }
-            }
-            val sc = inp.readInt()
-            val stops = List(sc) { StopRef(inp.readUTF(), inp.readUTF(), inp.readDouble(), inp.readDouble()) }
-            val routeIdx = if (version >= 3) IntArray(inp.readInt()) { inp.readInt() } else IntArray(0)
-            routes += TileRoute(key, mode, osmRoute, ref, name, color, text, rank, parts, ids, stops, bounds, routeIdx)
-        }
-        return TileData(routes, zoomFiltered)
+    // ---------- Packs ----------
+
+    /** Every tile file of a region present on disk (for building packs). */
+    fun filesOf(region: Region): List<File> = tilesOf(region).flatMap { (l, x, y) ->
+        listOfNotNull(
+            file(l, x, y).takeIf { has(l, x, y) },
+            if (l == Level.City && hasBike(x, y)) bikeFile(x, y) else null,
+        )
+    }
+
+    /** Stores one file from a pack (a tile or bike file, by its name) and marks it present. */
+    fun putFromPack(name: String, input: java.io.InputStream) {
+        require(PACK_NAME.matches(name)) { "unexpected pack entry $name" }
+        val tmp = File(dir, "$name.tmp")
+        tmp.outputStream().use { input.copyTo(it, 1 shl 16) }
+        tmp.renameTo(File(dir, name))
+        present += name
     }
 }

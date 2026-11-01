@@ -20,7 +20,7 @@ import app.wayfinder.data.Overlays
 import app.wayfinder.data.Overpass
 import app.wayfinder.data.Place
 import app.wayfinder.data.PlaceKind
-import app.wayfinder.data.RouteStore
+import app.wayfinder.data.BikeRoutes
 import app.wayfinder.data.Router
 import app.wayfinder.data.StopRef
 import app.wayfinder.data.Tier
@@ -34,6 +34,7 @@ import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -359,7 +360,8 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     /** [lod] is the zoom a saved tile was simplified for on loading (zoomed-out views need less). */
     private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false, val lod: Int = 0)
     private val tileCache = object : LinkedHashMap<TKey, TileData>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > 90
+        // Always room for every tile in view (continent views can need hundreds of small ones).
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > maxOf(90, neededTiles.size + 12)
     }
     private val tileFailedAt = HashMap<TKey, Long>()
     private var neededTiles: List<TKey> = emptyList()
@@ -376,10 +378,16 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     var departures by mutableStateOf<DepartureBoard?>(null)
         private set
     private var departuresJob: Job? = null
-    private val bikeStore = RouteStore()
+    /** Bike routes loaded so far: online tiles and saved squares, in the compact line form. */
+    private val bikeTiles = LinkedHashMap<Any, TileData>()
     private val loadedTiles = HashSet<TileId>()
-    /** Download squares whose saved bike routes are in [bikeStore]. */
+    /** Download squares whose saved bike routes are in [bikeTiles]. */
     private val loadedBikeUnits = HashSet<Pair<Int, Int>>()
+
+    private suspend fun redrawBikes() {
+        val tiles = bikeTiles.values.toList()
+        bikeLines = withContext(storeThread) { TransitRoutes.merge(tiles, withStops = false).lines }
+    }
     private val retryAfter = HashMap<Tier, Long>()
     private var overlayError: String? = null
     private var loaderJob: Job? = null
@@ -869,6 +877,24 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /** Reads one saved tile at the detail its key asks for. */
+    private suspend fun loadSaved(next: TKey): TileData? {
+        val lvl = offlineStore.levelForZ(next.z) ?: return null
+        val t = offlineStore.read(lvl, next.x, next.y) ?: return null
+        return when (lvl) {
+            OfflineTransit.Level.Rail -> {
+                // Far out, only what you can see from a continent away: trains, coaches, ferries.
+                val far = next.lod < 7
+                val kept = if (far) TileData(t.routes.filter {
+                    it.mode == TransitMode.Train || it.mode == TransitMode.Coach || it.mode == TransitMode.Ferry
+                }, t.zoomFiltered) else t
+                TransitRoutes.reduce(kept, next.lod, if (far) 400 else 1_500)
+            }
+            OfflineTransit.Level.City -> TransitRoutes.reduce(t, next.lod, 4_000)
+            OfflineTransit.Level.Street -> t
+        }
+    }
+
     /** Shows the saved tiles for the view and saves any missing squares around it. */
     private fun ensureTransit() {
         if (!transitVisible) return
@@ -905,31 +931,14 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         if (transitJob?.isActive == true) return
         transitJob = viewModelScope.launch {
             while (true) {
-                val next = neededTiles.firstOrNull { it !in tileCache && it !in tileFailedAt } ?: break
-                val lvl = offlineStore.levelForZ(next.z)
-                val data = lvl?.let { offlineStore.read(it, next.x, next.y) }?.let { t ->
-                    // Lighter shapes for zoomed-out views: fewer points for the map to tile.
-                    withContext(storeThread) {
-                        when (lvl) {
-                            OfflineTransit.Level.Rail -> {
-                                // Far out, only what you can see from a continent away: trains, coaches, ferries.
-                                val far = next.lod < 7
-                                val kept = if (far) TileData(t.routes.filter {
-                                    it.mode == TransitMode.Train || it.mode == TransitMode.Coach || it.mode == TransitMode.Ferry
-                                }, t.zoomFiltered) else t
-                                TransitRoutes.reduce(kept, next.lod, if (far) 400 else 1_500)
-                            }
-                            OfflineTransit.Level.City -> TransitRoutes.reduce(t, next.lod, 4_000)
-                            OfflineTransit.Level.Street -> t
-                        }
-                    }
+                // Several tiles at once: reading and simplifying run in parallel off the main thread.
+                val batch = neededTiles.filter { it !in tileCache && it !in tileFailedAt }.take(6)
+                if (batch.isEmpty()) break
+                val loaded = batch.map { next -> async(Dispatchers.Default) { next to loadSaved(next) } }.awaitAll()
+                for ((next, data) in loaded) {
+                    if (data != null) tileCache[next] = data else tileFailedAt[next] = System.currentTimeMillis()
                 }
-                if (data != null) {
-                    tileCache[next] = data
-                    if (next in neededTiles) rebuildTransit()
-                } else {
-                    tileFailedAt[next] = System.currentTimeMillis()
-                }
+                if (loaded.any { it.second != null && it.first in neededTiles }) rebuildTransit()
             }
             updateHint()
         }
@@ -990,9 +999,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         if (loaderJob?.isActive == true) return
         loaderJob = viewModelScope.launch {
             while (true) {
-                if (loadedTiles.size > 40 || loadedBikeUnits.size > 6) {
+                if (loadedTiles.size > 40 || loadedBikeUnits.size > 8) {
                     // Keep memory bounded: start over once a lot of area has been cached.
-                    withContext(storeThread) { bikeStore.clear() }
+                    bikeTiles.clear()
                     loadedTiles.clear()
                     loadedBikeUnits.clear()
                 }
@@ -1004,10 +1013,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                     if (units.isNotEmpty()) {
                         for (u in units) {
                             loadedBikeUnits += u
-                            val answers = offlineStore.readBike(u.first, u.second) ?: continue
-                            withContext(storeThread) { answers.forEach { bikeStore.merge(it, bike = true) } }
+                            offlineStore.readBike(u.first, u.second)?.let { bikeTiles[u] = it }
                         }
-                        bikeLines = withContext(storeThread) { bikeStore.geoJson(null).first }
+                        redrawBikes()
                         continue
                     }
                 }
@@ -1017,13 +1025,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
                     Bounds(minOf(a.south, b.south), minOf(a.west, b.west), maxOf(a.north, b.north), maxOf(a.east, b.east))
                 }
                 try {
-                    val json = Overpass.fetch(Tier.Bike, area)
-                    val lines = withContext(storeThread) {
-                        bikeStore.merge(json, bike = true)
-                        bikeStore.geoJson(null).first
-                    }
+                    bikeTiles[tiles.first()] = BikeRoutes.fetch(area, large = false)
                     loadedTiles += tiles
-                    bikeLines = lines
+                    redrawBikes()
                     overlayError = null
                 } catch (e: CancellationException) {
                     throw e

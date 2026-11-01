@@ -9,3 +9,5 @@ captures/
 tools/glyphs/fonts/
 tools/glyphs/cps.json
 tools/glyphs/node_modules/
+packer/work/
+packer/out/

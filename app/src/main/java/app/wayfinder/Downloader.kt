@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
 import app.wayfinder.data.OfflineTransit
+import app.wayfinder.data.Packs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,8 @@ object Downloader {
         val finishing: Boolean = false,
         /** Bike routes run in their own, slower queue (Overpass allows few requests at once). */
         val bikesDone: Int = 0,
+        /** Downloading a ready-made pack: [done] and [total] are megabytes. */
+        val pack: Boolean = false,
     )
 
     lateinit var store: OfflineTransit
@@ -104,7 +107,19 @@ object Downloader {
             }
             var complete = false
             try {
-                coroutineScope {
+                // A ready-made pack (built on GitHub) is one fast download; squares are the fallback.
+                val pack = if (region.id.startsWith("area-")) null else runCatching { Packs.index()[region.id] }.getOrNull()
+                var packed = false
+                if (pack != null) {
+                    _state.value = State(region, 0, maxOf(1, (pack.bytes / 1_000_000).toInt()), pack = true)
+                    packed = attempt {
+                        Packs.install(pack, store) { d, t ->
+                            _state.value = State(region, (d / 1_000_000).toInt(), maxOf(1, (t / 1_000_000).toInt()), problem = problem, pack = true)
+                        }
+                    }
+                    if (packed) { finishing = true; complete = true }
+                }
+                if (!packed) coroutineScope {
                     // Bike routes: their own queue, so slow Overpass never holds up the lines.
                     val bikes = launch {
                         val todo = units.filter { refresh || !store.hasBike(it.first, it.second) }

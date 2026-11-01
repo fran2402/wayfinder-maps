@@ -1,0 +1,93 @@
+name: Build offline packs
+
+# Builds one ready-made file per region (lines with every mode, and bike routes for countries
+# and cities) and publishes them on the "packs" release, where the app downloads them.
+# Run it by hand (optionally for a few regions) or let it refresh monthly. Transitous is
+# volunteer-run, so regions build a few at a time rather than all at once.
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Comma-separated region ids (empty = all), e.g. germany,london"
+        required: false
+        default: ""
+  schedule:
+    - cron: "23 2 3 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: packs
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.list.outputs.regions }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check the tile format
+        run: ./gradlew --no-daemon -q -p packer run --args="selftest"
+      - name: List regions
+        id: list
+        run: |
+          ./gradlew --no-daemon -q -p packer run --args="list $PWD/regions.json ${{ github.event.inputs.regions }}"
+          echo "regions=$(cat regions.json)" >> "$GITHUB_OUTPUT"
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view packs --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create packs --repo "$GITHUB_REPOSITORY" --title "Offline packs" \
+              --notes "Ready-made offline data for the Wayfinder app. Built by the 'Build offline packs' workflow." --latest=false
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build ${{ matrix.region }}
+        run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Old parts of this region go first, so a pack that shrank leaves nothing stale behind.
+          for old in $(gh release view packs --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -E "^${{ matrix.region }}(\.part[0-9]+)?\.zip$" || true); do
+            gh release delete-asset packs "$old" --repo "$GITHUB_REPOSITORY" -y
+          done
+          gh release upload packs out/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  index:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write index.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir meta && cd meta
+          gh release download packs --repo "$GITHUB_REPOSITORY" -p "*.json" --skip-existing || true
+          rm -f index.json
+          jq -s 'map({(.id): .}) | add // {}' *.json > index.json
+          gh release upload packs index.json --repo "$GITHUB_REPOSITORY" --clobber

@@ -278,6 +278,7 @@ private fun RegionRow(
                 Text(region.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
+                        download != null && download.pack -> "Downloading · ${download.done} of ${download.total} MB"
                         download != null && download.finishing -> "Preparing zoomed-out views…"
                         download != null && download.retrying -> "Second try · ${download.failed} map squares left"
                         download != null -> "Lines ${download.done} of ${download.total} · bike routes ${download.bikesDone}" +
