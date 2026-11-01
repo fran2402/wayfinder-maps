@@ -12,8 +12,10 @@ android {
         applicationId = "app.wayfinder"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI build number, so crash reports and the installed APK identify the exact build.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+        versionCode = 100 + build
+        versionName = "0.1.$build"
     }
 
     buildTypes {
