@@ -38,10 +38,48 @@ class OfflineTransit(context: Context) {
     private val index = File(dir, "regions.json")
 
     companion object {
-        val presets = listOf(
-            Region("europe", "Europe", Bounds(34.5, -11.0, 71.5, 41.0), listOf(Level.Rail, Level.City)),
-            Region("north-america", "North America", Bounds(24.0, -125.0, 50.0, -66.0), listOf(Level.Rail, Level.City)),
+        private val wide = listOf(Level.Rail, Level.City)
+        private val all = listOf(Level.Rail, Level.City, Level.Street)
+
+        /** Whole continents: trains, metro and trams. */
+        val continents = listOf(
+            Region("europe", "Europe", Bounds(34.5, -11.0, 71.5, 41.0), wide),
+            Region("north-america", "North America", Bounds(24.0, -125.0, 50.0, -66.0), wide),
+            Region("japan", "Japan", Bounds(30.9, 129.3, 45.6, 146.0), wide),
+            Region("australia-nz", "Australia and New Zealand", Bounds(-47.5, 112.5, -10.5, 179.0), wide),
         )
+
+        /** Countries and areas: smaller and quicker to download. */
+        val countries = listOf(
+            Region("uk-ireland", "UK and Ireland", Bounds(49.8, -10.8, 59.0, 2.0), wide),
+            Region("france", "France", Bounds(41.3, -5.3, 51.2, 9.7), wide),
+            Region("benelux", "Belgium, Netherlands, Luxembourg", Bounds(49.4, 2.5, 53.6, 7.3), wide),
+            Region("germany", "Germany", Bounds(47.2, 5.8, 55.1, 15.1), wide),
+            Region("alps", "Switzerland and Austria", Bounds(45.8, 5.9, 49.1, 17.2), wide),
+            Region("italy", "Italy", Bounds(36.6, 6.6, 47.1, 18.6), wide),
+            Region("iberia", "Spain and Portugal", Bounds(35.9, -9.6, 43.9, 3.4), wide),
+            Region("nordics", "Nordic countries", Bounds(54.5, 4.5, 71.2, 31.6), wide),
+            Region("central-europe", "Poland, Czechia, Slovakia, Hungary", Bounds(45.7, 12.0, 55.0, 24.2), wide),
+            Region("balkans", "Croatia, Slovenia and the Balkans", Bounds(39.6, 13.3, 46.9, 23.1), wide),
+            Region("greece", "Greece", Bounds(34.8, 19.3, 41.8, 28.3), wide),
+            Region("us-northeast", "US Northeast", Bounds(38.0, -80.6, 45.1, -69.8), wide),
+            Region("california", "California", Bounds(32.5, -124.5, 42.0, -114.1), wide),
+        )
+
+        /** Big cities, with every bus line. */
+        val cities = listOf(
+            Region("london", "London", Bounds(51.28, -0.52, 51.70, 0.34), all),
+            Region("paris", "Paris", Bounds(48.70, 2.10, 49.02, 2.60), all),
+            Region("berlin", "Berlin", Bounds(52.33, 13.08, 52.68, 13.77), all),
+            Region("vienna", "Vienna", Bounds(48.11, 16.18, 48.33, 16.58), all),
+            Region("zagreb", "Zagreb", Bounds(45.72, 15.84, 45.88, 16.15), all),
+            Region("amsterdam", "Amsterdam", Bounds(52.27, 4.73, 52.43, 5.07), all),
+            Region("madrid", "Madrid", Bounds(40.31, -3.84, 40.56, -3.52), all),
+            Region("new-york", "New York", Bounds(40.48, -74.27, 40.93, -73.68), all),
+            Region("tokyo", "Tokyo", Bounds(35.50, 139.40, 35.85, 139.95), all),
+        )
+
+        val presets = continents + countries + cities
 
         /** Small areas also get buses. */
         fun visibleArea(view: Bounds) = Region(
@@ -86,6 +124,61 @@ class OfflineTransit(context: Context) {
         DataOutputStream(BufferedOutputStream(GZIPOutputStream(tmp.outputStream()), 1 shl 16)).use { encode(data, it) }
         tmp.renameTo(file(level, x, y))
         present += "${level.z}_${x}_$y.bin"
+    }
+
+    // ---------- Fetching ----------
+
+    /**
+     * Downloads one tile. Busy or unreachable servers are waited out; any other failure
+     * (usually a timeout on a dense area) splits the square into quarters, up to twice, and
+     * joins the parts. [onProblem] gets a short reason each time something goes wrong.
+     */
+    suspend fun fetch(level: Level, x: Int, y: Int, onProblem: (String) -> Unit): TileData =
+        fetchArea(Tiles.bounds(level.z, x, y), level, 0, onProblem)
+
+    private suspend fun fetchArea(area: Bounds, level: Level, depth: Int, onProblem: (String) -> Unit): TileData {
+        var waits = 0
+        var tries = 0
+        while (true) {
+            try {
+                return TransitRoutes.loadTile(area, level.serverZoom, level.includeBus)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onProblem(describe(e))
+                val busy = e is HttpException && (e.code == 429 || e.code == 503)
+                val offline = e is java.net.UnknownHostException || e is java.net.ConnectException
+                if ((busy || offline) && waits < 8) {
+                    waits++
+                    val hint = (e as? HttpException)?.retryAfterS?.coerceIn(1, 300)?.times(1000)
+                    kotlinx.coroutines.delay(hint ?: (10_000L * waits).coerceAtMost(60_000L))
+                    continue
+                }
+                if (depth < 2 && !busy && !offline) {
+                    val midLat = (area.south + area.north) / 2
+                    val midLon = (area.west + area.east) / 2
+                    val quarters = listOf(
+                        Bounds(midLat, area.west, area.north, midLon), Bounds(midLat, midLon, area.north, area.east),
+                        Bounds(area.south, area.west, midLat, midLon), Bounds(area.south, midLon, midLat, area.east),
+                    )
+                    val parts = quarters.map { q ->
+                        fetchArea(q, level, depth + 1, onProblem).also { kotlinx.coroutines.delay(150) }
+                    }
+                    return TransitRoutes.combine(parts)
+                }
+                tries++
+                if (tries >= 3) throw e
+                kotlinx.coroutines.delay(4_000L * tries)
+            }
+        }
+    }
+
+    private fun describe(e: Exception): String = when {
+        e is HttpException && (e.code == 429 || e.code == 503) -> "server busy, waiting"
+        e is HttpException -> "server error ${e.code}"
+        e is java.net.SocketTimeoutException || e is java.io.InterruptedIOException -> "timed out, splitting"
+        e is java.net.UnknownHostException || e is java.net.ConnectException -> "no connection, waiting"
+        else -> e.message?.take(60) ?: e.javaClass.simpleName
     }
 
     // ---------- Regions ----------

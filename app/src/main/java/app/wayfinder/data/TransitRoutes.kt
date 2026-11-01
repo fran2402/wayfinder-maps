@@ -87,7 +87,9 @@ object TransitRoutes {
             val handle = coroutineContext[Job]?.invokeOnCompletion { if (it != null) call.cancel() }
             try {
                 call.execute().use { response ->
-                    if (!response.isSuccessful) throw HttpException(response.code, "HTTP ${response.code}")
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code, "HTTP ${response.code}", response.header("Retry-After")?.trim()?.toLongOrNull())
+                    }
                     val body = response.body ?: throw HttpException(response.code, "empty response")
                     parse(body.charStream(), zoom.toDouble(), includeBus)
                 }
@@ -313,6 +315,40 @@ object TransitRoutes {
     }
 
     /** Merges tiles into one network: shapes de-duplicated per line, longest stop list kept. */
+    /**
+     * Joins tiles fetched for parts of one area into a single tile: routes with the same key
+     * become one route with their shapes de-duplicated, so nothing is stored twice.
+     */
+    fun combine(tiles: Collection<TileData>): TileData {
+        class Acc(val first: TileRoute) {
+            val parts = ArrayList<FloatArray>()
+            val ids = ArrayList<Int>()
+            val seen = HashSet<Int>()
+            var stops: List<StopRef> = first.stops
+            var s = first.bounds.south; var w = first.bounds.west; var n = first.bounds.north; var e = first.bounds.east
+        }
+        val byKey = LinkedHashMap<String, Acc>()
+        var zoomFiltered = false
+        for (tile in tiles) {
+            zoomFiltered = zoomFiltered || tile.zoomFiltered
+            for (r in tile.routes) {
+                val acc = byKey.getOrPut(r.key) { Acc(r) }
+                r.parts.forEachIndexed { k, part ->
+                    if (acc.seen.add(r.partIds[k])) { acc.parts += part; acc.ids += r.partIds[k] }
+                }
+                if (r.stops.size > acc.stops.size) acc.stops = r.stops
+                acc.s = minOf(acc.s, r.bounds.south); acc.w = minOf(acc.w, r.bounds.west)
+                acc.n = maxOf(acc.n, r.bounds.north); acc.e = maxOf(acc.e, r.bounds.east)
+            }
+        }
+        val routes = byKey.values.map { a ->
+            val r = a.first
+            TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank,
+                a.parts, a.ids.toIntArray(), a.stops, Bounds(a.s, a.w, a.n, a.e))
+        }
+        return TileData(routes, zoomFiltered)
+    }
+
     fun merge(tiles: Collection<TileData>): TransitData {
         class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()

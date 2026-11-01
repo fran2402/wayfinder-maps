@@ -43,6 +43,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import app.wayfinder.data.OfflineTransit
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.rotate
 import app.wayfinder.ui.WayfinderViewModel
 import kotlin.math.roundToInt
 import app.wayfinder.ui.Ph
@@ -117,36 +128,44 @@ fun SettingsSheet(
 
         // ---------- Offline data ----------
         SectionTitle("Offline transit data")
-        Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh) {
-            Column(Modifier.padding(vertical = 6.dp)) {
-                val savedById = saved.associateBy { it.region.id }
-                val rows = presets + saved.map { it.region }.filter { r -> presets.none { it.id == r.id } }
-                rows.forEachIndexed { i, region ->
-                    if (i > 0) HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp))
-                    RegionRow(
-                        region = region,
-                        saved = savedById[region.id],
-                        download = download?.takeIf { it.region.id == region.id },
-                        busy = download != null,
-                        tiles = tileCount(region),
-                        onDownload = { onDownload(region) },
-                        onCancel = onCancelDownload,
-                        onDelete = { onDelete(region.id) },
-                    )
+        val savedById = saved.associateBy { it.region.id }
+        val custom = saved.map { it.region }.filter { r -> presets.none { it.id == r.id } }
+        RegionGroup(
+            regions = OfflineTransit.continents + custom,
+            savedById = savedById, download = download, tileCount = tileCount,
+            onDownload = onDownload, onCancelDownload = onCancelDownload, onDelete = onDelete,
+        ) {
+            HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("Visible area", style = MaterialTheme.typography.titleMedium)
+                    Text("Everything on screen, including buses", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
-                HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Visible area", style = MaterialTheme.typography.titleMedium)
-                        Text("Everything on screen, including buses", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-                    }
-                    FilledTonalButton(
-                        onClick = { visibleArea()?.let(onDownload) },
-                        enabled = download == null,
-                        shapes = ButtonDefaults.shapes(),
-                    ) { Text("Download") }
-                }
+                FilledTonalButton(
+                    onClick = { visibleArea()?.let(onDownload) },
+                    enabled = download == null,
+                    shapes = ButtonDefaults.shapes(),
+                ) { Text("Download") }
             }
+        }
+        var countriesOpen by rememberSaveable { mutableStateOf(false) }
+        var citiesOpen by rememberSaveable { mutableStateOf(false) }
+        val activeId = download?.region?.id
+        ExpandableGroup(
+            title = "Countries and areas",
+            subtitle = "${OfflineTransit.countries.size} regions · trains, metro and trams",
+            open = countriesOpen || OfflineTransit.countries.any { it.id == activeId },
+            onToggle = { countriesOpen = !countriesOpen },
+        ) {
+            RegionGroup(OfflineTransit.countries, savedById, download, tileCount, onDownload, onCancelDownload, onDelete)
+        }
+        ExpandableGroup(
+            title = "Cities",
+            subtitle = "${OfflineTransit.cities.size} cities · every line including buses",
+            open = citiesOpen || OfflineTransit.cities.any { it.id == activeId },
+            onToggle = { citiesOpen = !citiesOpen },
+        ) {
+            RegionGroup(OfflineTransit.cities, savedById, download, tileCount, onDownload, onCancelDownload, onDelete)
         }
         Text(
             "Lines in downloaded regions draw from your phone without waiting for the network. " +
@@ -167,6 +186,67 @@ fun SettingsSheet(
                 SettingRow(Ph.Path, "Elevation and depth", "Colour land by height and the sea by depth", relief, onRelief)
             }
         }
+    }
+}
+
+@Composable
+private fun RegionGroup(
+    regions: List<OfflineTransit.Region>,
+    savedById: Map<String, OfflineTransit.Saved>,
+    download: WayfinderViewModel.DownloadState?,
+    tileCount: (OfflineTransit.Region) -> Int,
+    onDownload: (OfflineTransit.Region) -> Unit,
+    onCancelDownload: () -> Unit,
+    onDelete: (String) -> Unit,
+    footer: @Composable () -> Unit = {},
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh) {
+        Column(Modifier.padding(vertical = 6.dp)) {
+            regions.forEachIndexed { i, region ->
+                if (i > 0) HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 16.dp, end = 16.dp))
+                RegionRow(
+                    region = region,
+                    saved = savedById[region.id],
+                    download = download?.takeIf { it.region.id == region.id },
+                    busy = download != null,
+                    tiles = tileCount(region),
+                    onDownload = { onDownload(region) },
+                    onCancel = onCancelDownload,
+                    onDelete = { onDelete(region.id) },
+                )
+            }
+            footer()
+        }
+    }
+}
+
+@Composable
+private fun ExpandableGroup(
+    title: String,
+    subtitle: String,
+    open: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val turn by animateFloatAsState(if (open) 180f else 0f, MaterialTheme.motionScheme.fastSpatialSpec(), label = "caret")
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(
+            onClick = onToggle,
+            shape = RoundedCornerShape(24.dp),
+            color = if (open) colors.secondaryContainer else colors.surfaceContainerHigh,
+            contentColor = if (open) colors.onSecondaryContainer else colors.onSurface,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium)
+                    Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                }
+                Icon(Ph.CaretDown, contentDescription = if (open) "Collapse" else "Expand", modifier = Modifier.size(20.dp).rotate(turn))
+            }
+        }
+        AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) { content() }
     }
 }
 
@@ -198,6 +278,7 @@ private fun RegionRow(
                 Text(region.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
+                        download != null && download.retrying -> "Second try · ${download.failed} map squares left"
                         download != null -> "Downloading ${download.done} of ${download.total} map squares" +
                             if (download.failed > 0) " · ${download.failed} failed" else ""
                         saved != null && saved.complete -> "Downloaded · ${formatBytes(saved.bytes)}"
@@ -229,6 +310,13 @@ private fun RegionRow(
                 progress = { if (download.total == 0) 0f else download.done.toFloat() / download.total },
                 modifier = Modifier.fillMaxWidth(),
             )
+            val note = listOfNotNull(
+                if (download.retrying) "Retrying the ${download.failed} that failed" else null,
+                download.problem?.let { "Last issue: $it" },
+            ).joinToString(" · ")
+            if (note.isNotEmpty()) {
+                Text(note, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
         }
     }
 }

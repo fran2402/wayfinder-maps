@@ -90,7 +90,15 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     var savedRegions by mutableStateOf(offlineStore.saved())
         private set
 
-    data class DownloadState(val region: OfflineTransit.Region, val done: Int, val total: Int, val failed: Int = 0)
+    data class DownloadState(
+        val region: OfflineTransit.Region,
+        val done: Int,
+        val total: Int,
+        val failed: Int = 0,
+        /** The last thing that went wrong, shown under the progress bar. */
+        val problem: String? = null,
+        val retrying: Boolean = false,
+    )
     var download by mutableStateOf<DownloadState?>(null)
         private set
     private var downloadJob: Job? = null
@@ -113,28 +121,38 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         downloadJob = viewModelScope.launch {
             var done = 0
             var failed = 0
+            var problem: String? = null
+            var retrying = false
+            fun publish() { download = DownloadState(region, done, tiles.size, failed, problem, retrying) }
+            suspend fun get(level: OfflineTransit.Level, x: Int, y: Int): Boolean = try {
+                val data = offlineStore.fetch(level, x, y) { problem = it; publish() }
+                offlineStore.write(level, x, y, data)
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
             try {
+                val missed = ArrayList<Triple<OfflineTransit.Level, Int, Int>>()
                 for (tile in tiles) {
-                    val level = tile.first; val x = tile.second; val y = tile.third
+                    val (level, x, y) = tile
                     if (!offlineStore.has(level, x, y)) {
-                        var attempt = 0
-                        while (true) {
-                            try {
-                                val data = TransitRoutes.loadTile(Tiles.bounds(level.z, x, y), level.serverZoom, level.includeBus)
-                                offlineStore.write(level, x, y, data)
-                                break
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                attempt++
-                                if (attempt >= 3) { failed++; break }
-                                delay(2_000L * attempt)
-                            }
-                        }
-                        delay(200)
+                        if (!get(level, x, y)) { failed++; missed += tile }
+                        delay(150)
                     }
                     done++
-                    download = DownloadState(region, done, tiles.size, failed)
+                    publish()
+                }
+                // A second, slower pass for whatever failed the first time.
+                if (missed.isNotEmpty()) {
+                    retrying = true
+                    publish()
+                    delay(10_000)
+                    for ((level, x, y) in missed) {
+                        if (get(level, x, y)) { failed--; publish() }
+                        delay(1_000)
+                    }
                 }
             } finally {
                 offlineStore.record(OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = failed == 0 && done == tiles.size))

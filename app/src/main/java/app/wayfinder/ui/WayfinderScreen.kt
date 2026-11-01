@@ -375,8 +375,14 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                             ?.takeIf { sheetMode != SheetMode.None }
                             ?: Float.MAX_VALUE
                         val bottom = minOf(sheetTop.toInt(), constraints.maxHeight - navBottomPx) - gapPx
+                        val y = bottom - placeable.height
+                        // Fade the toolbar out as a tall sheet pushes it towards the search bar,
+                        // and leave it unplaced (so it takes no taps) once it would overlap.
+                        val hideAt = constraints.maxHeight * 0.22f
+                        val fadeOver = constraints.maxHeight * 0.12f
+                        val alpha = ((y - hideAt) / fadeOver).coerceIn(0f, 1f)
                         layout(constraints.maxWidth, constraints.maxHeight) {
-                            placeable.place(0, (bottom - placeable.height).coerceAtLeast(0))
+                            if (alpha > 0f) placeable.placeWithLayer(0, y) { this.alpha = alpha }
                         }
                     }
                     .padding(horizontal = 16.dp),

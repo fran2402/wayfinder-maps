@@ -15,7 +15,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class HttpException(val code: Int, message: String) : IOException(message)
+/** [retryAfterS] is the server's Retry-After hint in seconds, when it sent one. */
+class HttpException(val code: Int, message: String, val retryAfterS: Long? = null) : IOException(message)
 
 object Http {
     /** OSM-ecosystem services ask for an identifying User-Agent. */
