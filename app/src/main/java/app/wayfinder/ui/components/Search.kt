@@ -177,7 +177,7 @@ fun SearchOverlay(
                         )
                     }
                 }
-                items(suggestions, key = { "${it.name}|${it.pos.lat}|${it.pos.lon}" }) { place ->
+                items(suggestions) { place ->
                     SuggestionRow(
                         icon = if (place.kind == PlaceKind.Station) Ph.Filled.Train else Ph.Filled.MapPin,
                         title = place.name,

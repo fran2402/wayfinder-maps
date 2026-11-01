@@ -81,6 +81,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     val haptics = LocalHapticFeedback.current
     val dark = isSystemInDarkTheme()
     val scheme = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
 
     val palette = remember(dark, scheme) {
         fun hex(c: Color) = MapController.hex(c.toArgb())
@@ -206,9 +207,9 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 AnimatedContent(
                     targetState = vm.destination != null,
                     transitionSpec = {
-                        (fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()) +
-                            slideInVertically(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it / 4 })
-                            .togetherWith(fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()))
+                        (fadeIn(motion.defaultEffectsSpec()) +
+                            slideInVertically(motion.defaultSpatialSpec()) { -it / 4 })
+                            .togetherWith(fadeOut(motion.fastEffectsSpec()))
                     },
                     label = "top",
                 ) { planning ->
