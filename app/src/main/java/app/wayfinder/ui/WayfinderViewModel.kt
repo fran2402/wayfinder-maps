@@ -80,8 +80,8 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Offline transit data ----------
-    private val offline = app.wayfinder.data.OfflineTransit(app)
-    var savedRegions by mutableStateOf(offline.saved())
+    private val offlineStore: app.wayfinder.data.OfflineTransit = app.wayfinder.data.OfflineTransit(app)
+    var savedRegions by mutableStateOf(offlineStore.saved())
         private set
 
     data class DownloadState(val region: app.wayfinder.data.OfflineTransit.Region, val done: Int, val total: Int, val failed: Int = 0)
@@ -89,7 +89,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var downloadJob: Job? = null
 
-    fun tileCount(region: app.wayfinder.data.OfflineTransit.Region) = offline.tilesOf(region).size
+    fun tileCount(region: app.wayfinder.data.OfflineTransit.Region) = offlineStore.tilesOf(region).size
 
     fun visibleAreaRegion(): app.wayfinder.data.OfflineTransit.Region? =
         lastViewport?.first?.let { app.wayfinder.data.OfflineTransit.visibleArea(it) }
@@ -100,21 +100,22 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun downloadRegion(region: app.wayfinder.data.OfflineTransit.Region) {
         if (downloadJob?.isActive == true) return
-        val tiles = offline.tilesOf(region)
-        offline.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offline.bytesOf(region), complete = false))
-        savedRegions = offline.saved()
+        val tiles = offlineStore.tilesOf(region)
+        offlineStore.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = false))
+        savedRegions = offlineStore.saved()
         download = DownloadState(region, 0, tiles.size)
         downloadJob = viewModelScope.launch {
             var done = 0
             var failed = 0
             try {
-                for ((level, x, y) in tiles) {
-                    if (!offline.has(level, x, y)) {
+                for (tile in tiles) {
+                    val level = tile.first; val x = tile.second; val y = tile.third
+                    if (!offlineStore.has(level, x, y)) {
                         var attempt = 0
                         while (true) {
                             try {
                                 val data = TransitRoutes.loadTile(Tiles.bounds(level.z, x, y), level.serverZoom, level.includeBus)
-                                offline.write(level, x, y, data)
+                                offlineStore.write(level, x, y, data)
                                 break
                             } catch (e: CancellationException) {
                                 throw e
@@ -130,8 +131,8 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
                     download = DownloadState(region, done, tiles.size, failed)
                 }
             } finally {
-                offline.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offline.bytesOf(region), complete = failed == 0 && done == tiles.size))
-                savedRegions = offline.saved()
+                offlineStore.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = failed == 0 && done == tiles.size))
+                savedRegions = offlineStore.saved()
                 download = null
                 tileCache.clear()
                 shownTiles = emptySet()
@@ -144,8 +145,8 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteRegion(id: String) {
         viewModelScope.launch {
-            offline.delete(id)
-            savedRegions = offline.saved()
+            offlineStore.delete(id)
+            savedRegions = offlineStore.saved()
             tileCache.clear()
             shownTiles = emptySet()
             ensureTransit()
@@ -730,7 +731,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
         if ((x1 - x0 + 1) * (y1 - y0 + 1) > 220) return null
         val keys = ArrayList<TKey>()
         for (x in x0..x1) for (y in y0..y1) {
-            if (!offline.has(level, x, y)) return null
+            if (!offlineStore.has(level, x, y)) return null
             keys += TKey(level.z, x, y, offline = true)
         }
         return keys
@@ -755,8 +756,8 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
                 } ?: break
                 if (next.offline) {
                     // From disk: fast, no throttling, no error banner.
-                    val level = offline.levelForZ(next.z)
-                    val data = level?.let { offline.read(it, next.x, next.y) }
+                    val level = offlineStore.levelForZ(next.z)
+                    val data = level?.let { offlineStore.read(it, next.x, next.y) }
                     if (data != null) {
                         tileCache[next] = data
                         if (next in neededTiles) rebuildTransit()
