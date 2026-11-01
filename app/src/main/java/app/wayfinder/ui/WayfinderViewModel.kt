@@ -7,22 +7,28 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.wayfinder.data.Bounds
+import app.wayfinder.data.Departure
+import app.wayfinder.data.Departures
 import app.wayfinder.data.Geocoder
 import app.wayfinder.data.Itinerary
 import app.wayfinder.data.LatLon
 import app.wayfinder.data.LineInfo
+import app.wayfinder.data.LoadedLine
+import app.wayfinder.data.OfflineTransit
 import app.wayfinder.data.Overlays
 import app.wayfinder.data.Overpass
+import app.wayfinder.data.Place
+import app.wayfinder.data.PlaceKind
 import app.wayfinder.data.RouteStore
+import app.wayfinder.data.Router
+import app.wayfinder.data.StopRef
 import app.wayfinder.data.Tier
+import app.wayfinder.data.TileData
 import app.wayfinder.data.TileId
 import app.wayfinder.data.Tiles
 import app.wayfinder.data.TransitData
 import app.wayfinder.data.TransitMode
 import app.wayfinder.data.TransitRoutes
-import app.wayfinder.data.Place
-import app.wayfinder.data.PlaceKind
-import app.wayfinder.data.Router
 import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,10 +57,10 @@ data class TripSegment(
 /** A place the user tapped on the map (restaurant, shop, station…). */
 data class PlaceDetail(val place: Place, val category: String?, val poiClass: String?)
 
-class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
+class WayfinderViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---------- Map settings (persisted) ----------
-    private val prefs = app.getSharedPreferences("map_settings", android.content.Context.MODE_PRIVATE)
+    private val prefs = application.getSharedPreferences("map_settings", android.content.Context.MODE_PRIVATE)
     var showFerries by mutableStateOf(prefs.getBoolean("ferries", false))
         private set
     var showTerrain by mutableStateOf(prefs.getBoolean("terrain", true))
@@ -80,28 +86,28 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Offline transit data ----------
-    private val offlineStore: app.wayfinder.data.OfflineTransit = app.wayfinder.data.OfflineTransit(app)
+    private val offlineStore: OfflineTransit = OfflineTransit(application)
     var savedRegions by mutableStateOf(offlineStore.saved())
         private set
 
-    data class DownloadState(val region: app.wayfinder.data.OfflineTransit.Region, val done: Int, val total: Int, val failed: Int = 0)
+    data class DownloadState(val region: OfflineTransit.Region, val done: Int, val total: Int, val failed: Int = 0)
     var download by mutableStateOf<DownloadState?>(null)
         private set
     private var downloadJob: Job? = null
 
-    fun tileCount(region: app.wayfinder.data.OfflineTransit.Region) = offlineStore.tilesOf(region).size
+    fun tileCount(region: OfflineTransit.Region) = offlineStore.tilesOf(region).size
 
-    fun visibleAreaRegion(): app.wayfinder.data.OfflineTransit.Region? =
-        lastViewport?.first?.let { app.wayfinder.data.OfflineTransit.visibleArea(it) }
+    fun visibleAreaRegion(): OfflineTransit.Region? =
+        lastViewport?.first?.let { OfflineTransit.visibleArea(it) }
 
     /**
      * Downloads a region tile by tile: one request at a time with a short pause (Transitous is
      * volunteer-run), retries, and resumes where it stopped.
      */
-    fun downloadRegion(region: app.wayfinder.data.OfflineTransit.Region) {
+    fun downloadRegion(region: OfflineTransit.Region) {
         if (downloadJob?.isActive == true) return
         val tiles = offlineStore.tilesOf(region)
-        offlineStore.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = false))
+        offlineStore.record(OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = false))
         savedRegions = offlineStore.saved()
         download = DownloadState(region, 0, tiles.size)
         downloadJob = viewModelScope.launch {
@@ -131,7 +137,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
                     download = DownloadState(region, done, tiles.size, failed)
                 }
             } finally {
-                offlineStore.record(app.wayfinder.data.OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = failed == 0 && done == tiles.size))
+                offlineStore.record(OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = failed == 0 && done == tiles.size))
                 savedRegions = offlineStore.saved()
                 download = null
                 tileCache.clear()
@@ -256,7 +262,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     var highlightedLine by mutableStateOf<String?>(null)
         private set
     /** The picked line with its stops, for the line sheet. */
-    val highlightedLoaded: app.wayfinder.data.LoadedLine?
+    val highlightedLoaded: LoadedLine?
         get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key } }
     /** The picked line's details, for the panel. */
     val highlightedInfo: LineInfo?
@@ -283,8 +289,8 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     /** Transit map tiles: fetched one at a time, cached (LRU), merged for the view. */
     /** [offline] tiles come from downloaded data (a fixed level), others from the network. */
     private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false)
-    private val tileCache = object : LinkedHashMap<TKey, app.wayfinder.data.TileData>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, app.wayfinder.data.TileData>?) = size > 220
+    private val tileCache = object : LinkedHashMap<TKey, TileData>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > 220
     }
     private val tileFailedAt = HashMap<TKey, Long>()
     private var neededTiles: List<TKey> = emptyList()
@@ -293,9 +299,9 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     /** Upcoming departures for the picked line at one of its stops. */
     data class DepartureBoard(
         val lineKey: String,
-        val stop: app.wayfinder.data.StopRef,
+        val stop: StopRef,
         val loading: Boolean,
-        val items: List<app.wayfinder.data.Departure>,
+        val items: List<Departure>,
         val error: String?,
     )
     var departures by mutableStateOf<DepartureBoard?>(null)
@@ -655,7 +661,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
         if (highlightedLine != key) highlight(key)
     }
 
-    fun showDepartures(stop: app.wayfinder.data.StopRef) {
+    fun showDepartures(stop: StopRef) {
         val line = highlightedLoaded ?: return
         departuresJob?.cancel()
         val board = DepartureBoard(line.info.key, stop, loading = true, items = emptyList(), error = null)
@@ -667,7 +673,7 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
         departuresJob = viewModelScope.launch {
             departures = try {
                 val now = System.currentTimeMillis() - 60_000
-                val items = app.wayfinder.data.Departures.load(stop.id, line.info.ref).filter { it.timeMs >= now }.take(12)
+                val items = Departures.load(stop.id, line.info.ref).filter { it.timeMs >= now }.take(12)
                 board.copy(loading = false, items = items, error = if (items.isEmpty()) "No upcoming departures of this line here" else null)
             } catch (e: CancellationException) {
                 throw e
@@ -722,9 +728,9 @@ class WayfinderViewModel(app: Application) : AndroidViewModel(app) {
     private fun offlineTilesFor(area: Bounds, zoom: Double): List<TKey>? {
         if (savedRegions.isEmpty()) return null
         val level = when {
-            zoom < 8.0 -> app.wayfinder.data.OfflineTransit.Level.Rail
-            zoom < 11.5 -> app.wayfinder.data.OfflineTransit.Level.City
-            else -> app.wayfinder.data.OfflineTransit.Level.Street
+            zoom < 8.0 -> OfflineTransit.Level.Rail
+            zoom < 11.5 -> OfflineTransit.Level.City
+            else -> OfflineTransit.Level.Street
         }
         val x0 = Tiles.lonToX(area.west, level.z); val x1 = Tiles.lonToX(area.east, level.z)
         val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
