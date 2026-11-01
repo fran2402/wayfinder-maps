@@ -76,7 +76,7 @@ object TransitRoutes {
      * Loads one tile; [zoom] is the detail level asked of the server. Buses are dropped when
      * [includeBus] is false so zoomed-out views stay readable while metro and trams still show.
      */
-    suspend fun loadTile(area: Bounds, zoom: Int, includeBus: Boolean): TileData {
+    suspend fun loadTile(area: Bounds, zoom: Int, includeBus: Boolean, maxRoutes: Int = MAX_ROUTES): TileData {
         val url = URL.toHttpUrl().newBuilder()
             .addQueryParameter("zoom", zoom.toString())
             .addQueryParameter("min", String.format(Locale.US, "%.6f,%.6f", area.south, area.west))
@@ -91,7 +91,7 @@ object TransitRoutes {
                         throw HttpException(response.code, "HTTP ${response.code}", response.header("Retry-After")?.trim()?.toLongOrNull())
                     }
                     val body = response.body ?: throw HttpException(response.code, "empty response")
-                    parse(body.charStream(), zoom.toDouble(), includeBus)
+                    parse(body.charStream(), zoom.toDouble(), includeBus, maxRoutes)
                 }
             } finally {
                 handle?.dispose()
@@ -121,7 +121,7 @@ object TransitRoutes {
         var zoomFiltered = false
     }
 
-    fun parse(reader: Reader, zoom: Double, includeBus: Boolean = true): TileData {
+    fun parse(reader: Reader, zoom: Double, includeBus: Boolean = true, maxRoutes: Int = MAX_ROUTES): TileData {
         val raw = Raw()
         val tolerance = ((360.0 / (256.0 * 2.0.pow(zoom))) / 3.0).toFloat()
         JsonReader(reader).use { r ->
@@ -137,7 +137,7 @@ object TransitRoutes {
             }
             r.endObject()
         }
-        return build(raw, includeBus)
+        return build(raw, includeBus, maxRoutes)
     }
 
     private fun readRoutes(r: JsonReader, raw: Raw) {
@@ -266,14 +266,14 @@ object TransitRoutes {
         else -> TransitMode.Train to "train" // RAIL, SUBURBAN, REGIONAL_RAIL, HIGHSPEED_RAIL, …
     }
 
-    private fun build(raw: Raw, includeBus: Boolean): TileData {
+    private fun build(raw: Raw, includeBus: Boolean, maxRoutes: Int): TileData {
         val ordered = raw.routes
             // Routes without real shapes would be drawn as straight chords between stops.
             .filter { it.pathSource != "NONE" }
             .filter { includeBus || classify(it.mode).first != TransitMode.Bus }
             .sortedByDescending { Palette.rank(classify(it.mode).second, "") }
         val out = ArrayList<TileRoute>()
-        for (route in ordered.take(MAX_ROUTES)) {
+        for (route in ordered.take(maxRoutes)) {
             val (mode, osmRoute) = classify(route.mode)
             val ref = route.ref.takeIf { it.length <= 10 } ?: ""
             val color = route.color ?: mode.colorArgb
@@ -311,42 +311,113 @@ object TransitRoutes {
                 bounds = Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()),
             )
         }
-        return TileData(out, raw.zoomFiltered || raw.routes.size > MAX_ROUTES)
+        return TileData(out, raw.zoomFiltered || raw.routes.size > maxRoutes)
     }
 
     /** Merges tiles into one network: shapes de-duplicated per line, longest stop list kept. */
     /**
-     * Joins tiles fetched for parts of one area into a single tile: routes with the same key
-     * become one route with their shapes de-duplicated, so nothing is stored twice.
+     * Accumulates routes into one tile: routes with the same key become one route, and shapes
+     * already present (same content) are not stored twice.
      */
-    fun combine(tiles: Collection<TileData>): TileData {
-        class Acc(val first: TileRoute) {
+    class TileBuilder {
+        private class Acc(val first: TileRoute) {
             val parts = ArrayList<FloatArray>()
             val ids = ArrayList<Int>()
             val seen = HashSet<Int>()
             var stops: List<StopRef> = first.stops
             var s = first.bounds.south; var w = first.bounds.west; var n = first.bounds.north; var e = first.bounds.east
         }
-        val byKey = LinkedHashMap<String, Acc>()
-        var zoomFiltered = false
-        for (tile in tiles) {
-            zoomFiltered = zoomFiltered || tile.zoomFiltered
-            for (r in tile.routes) {
-                val acc = byKey.getOrPut(r.key) { Acc(r) }
-                r.parts.forEachIndexed { k, part ->
-                    if (acc.seen.add(r.partIds[k])) { acc.parts += part; acc.ids += r.partIds[k] }
-                }
-                if (r.stops.size > acc.stops.size) acc.stops = r.stops
-                acc.s = minOf(acc.s, r.bounds.south); acc.w = minOf(acc.w, r.bounds.west)
-                acc.n = maxOf(acc.n, r.bounds.north); acc.e = maxOf(acc.e, r.bounds.east)
+        private val byKey = LinkedHashMap<String, Acc>()
+        private var zoomFiltered = false
+
+        val isEmpty get() = byKey.isEmpty()
+
+        fun add(r: TileRoute) {
+            val acc = byKey.getOrPut(r.key) { Acc(r) }
+            r.parts.forEachIndexed { k, part ->
+                if (acc.seen.add(r.partIds[k])) { acc.parts += part; acc.ids += r.partIds[k] }
             }
+            if (r.stops.size > acc.stops.size) acc.stops = r.stops
+            acc.s = minOf(acc.s, r.bounds.south); acc.w = minOf(acc.w, r.bounds.west)
+            acc.n = maxOf(acc.n, r.bounds.north); acc.e = maxOf(acc.e, r.bounds.east)
         }
-        val routes = byKey.values.map { a ->
+
+        fun addAll(t: TileData) {
+            zoomFiltered = zoomFiltered || t.zoomFiltered
+            t.routes.forEach(::add)
+        }
+
+        fun build(): TileData = TileData(byKey.values.map { a ->
             val r = a.first
             TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank,
                 a.parts, a.ids.toIntArray(), a.stops, Bounds(a.s, a.w, a.n, a.e))
+        }, zoomFiltered)
+    }
+
+    /** Joins tiles fetched for parts of one area into a single tile. */
+    fun combine(tiles: Collection<TileData>): TileData =
+        TileBuilder().apply { tiles.forEach(::addAll) }.build()
+
+    /**
+     * The part of [r] inside [area]: each shape is cut into the runs of segments that touch the
+     * area, so a long line stored in many tiles is not stored whole in each. Null when nothing is left.
+     */
+    fun clip(r: TileRoute, area: Bounds): TileRoute? {
+        if (!r.bounds.intersects(area)) return null
+        if (area.contains(r.bounds)) return r
+        val s = area.south.toFloat(); val n = area.north.toFloat(); val w = area.west.toFloat(); val e = area.east.toFloat()
+        val parts = ArrayList<FloatArray>()
+        for (pts in r.parts) {
+            var start = -1
+            var k = 0
+            while (k + 3 < pts.size) {
+                val la0 = pts[k]; val lo0 = pts[k + 1]; val la1 = pts[k + 2]; val lo1 = pts[k + 3]
+                val touches = minOf(la0, la1) <= n && maxOf(la0, la1) >= s && minOf(lo0, lo1) <= e && maxOf(lo0, lo1) >= w
+                if (touches && start < 0) start = k
+                if (!touches && start >= 0) { parts += pts.copyOfRange(start, k + 2); start = -1 }
+                k += 2
+            }
+            if (start >= 0) parts += pts.copyOfRange(start, pts.size)
         }
-        return TileData(routes, zoomFiltered)
+        if (parts.isEmpty()) return null
+        return withParts(r, parts)
+    }
+
+    /**
+     * [t] simplified for drawing at [zoom]: shapes lose detail finer than a third of a pixel, and
+     * lines smaller than about three pixels (invisible at that zoom) are left out. At most
+     * [maxRoutes] are kept, most important and largest first.
+     */
+    fun reduce(t: TileData, zoom: Int, maxRoutes: Int): TileData {
+        val px = 360.0 / (256.0 * 2.0.pow(zoom))
+        val tolerance = (px / 3.0).toFloat()
+        val minExtent = px * 3.0
+        val out = ArrayList<Pair<TileRoute, Double>>()
+        for (r in t.routes) {
+            val extent = maxOf(r.bounds.north - r.bounds.south, r.bounds.east - r.bounds.west)
+            if (extent < minExtent) continue
+            val parts = r.parts.mapNotNull { p -> simplify(p, tolerance).takeIf { it.size >= 4 } }
+            if (parts.isEmpty()) continue
+            out += withParts(r, parts) to extent
+        }
+        val kept = out.sortedWith(compareByDescending<Pair<TileRoute, Double>> { it.first.rank }.thenByDescending { it.second })
+            .take(maxRoutes).map { it.first }
+        return TileData(kept, t.zoomFiltered || kept.size < out.size)
+    }
+
+    private fun withParts(r: TileRoute, parts: List<FloatArray>): TileRoute {
+        var s = 90f; var n = -90f; var w = 180f; var e = -180f
+        for (p in parts) {
+            var k = 0
+            while (k < p.size) {
+                val lat = p[k]; val lon = p[k + 1]
+                if (lat < s) s = lat; if (lat > n) n = lat; if (lon < w) w = lon; if (lon > e) e = lon
+                k += 2
+            }
+        }
+        return TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank,
+            parts, IntArray(parts.size) { parts[it].contentHashCode() }, r.stops,
+            Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()))
     }
 
     fun merge(tiles: Collection<TileData>): TransitData {

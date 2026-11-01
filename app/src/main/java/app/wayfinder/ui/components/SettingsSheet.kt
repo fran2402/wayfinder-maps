@@ -139,7 +139,7 @@ fun SettingsSheet(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text("Visible area", style = MaterialTheme.typography.titleMedium)
-                    Text("Everything on screen, including buses", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text("Everything around what's on screen", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                 }
                 FilledTonalButton(
                     onClick = { visibleArea()?.let(onDownload) },
@@ -153,7 +153,7 @@ fun SettingsSheet(
         val activeId = download?.region?.id
         ExpandableGroup(
             title = "Countries and areas",
-            subtitle = "${OfflineTransit.countries.size} regions · trains, metro and trams",
+            subtitle = "${OfflineTransit.countries.size} regions",
             open = countriesOpen || OfflineTransit.countries.any { it.id == activeId },
             onToggle = { countriesOpen = !countriesOpen },
         ) {
@@ -161,15 +161,15 @@ fun SettingsSheet(
         }
         ExpandableGroup(
             title = "Cities",
-            subtitle = "${OfflineTransit.cities.size} cities · every line including buses",
+            subtitle = "${OfflineTransit.cities.size} cities, with the area around them",
             open = citiesOpen || OfflineTransit.cities.any { it.id == activeId },
             onToggle = { citiesOpen = !citiesOpen },
         ) {
             RegionGroup(OfflineTransit.cities, savedById, download, tileCount, onDownload, onCancelDownload, onDelete)
         }
         Text(
-            "Lines in downloaded regions draw from your phone without waiting for the network. " +
-                "Downloads go one request at a time to be kind to Transitous, so a continent takes a while; keep the app open.",
+            "Downloaded regions include every line, buses too, at every zoom, and draw from your phone " +
+                "with no network. Departures and trip planning stay live. A continent takes a while; keep the app open.",
             style = MaterialTheme.typography.bodySmall,
             color = colors.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 8.dp),
@@ -278,13 +278,13 @@ private fun RegionRow(
                 Text(region.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
+                        download != null && download.finishing -> "Preparing zoomed-out views…"
                         download != null && download.retrying -> "Second try · ${download.failed} map squares left"
                         download != null -> "Downloading ${download.done} of ${download.total} map squares" +
                             if (download.failed > 0) " · ${download.failed} failed" else ""
                         saved != null && saved.complete -> "Downloaded · ${formatBytes(saved.bytes)}"
                         saved != null -> "Partly downloaded · ${formatBytes(saved.bytes)}"
-                        else -> "$tiles map squares · " +
-                            if (OfflineTransit.Level.Street in region.levels) "lines incl. buses" else "trains, metro and trams"
+                        else -> "$tiles map squares · every line, buses included"
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.onSurfaceVariant,

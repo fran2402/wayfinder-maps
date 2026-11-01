@@ -31,6 +31,9 @@ import app.wayfinder.data.TransitMode
 import app.wayfinder.data.TransitRoutes
 import app.wayfinder.data.TravelMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
@@ -98,70 +101,86 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         /** The last thing that went wrong, shown under the progress bar. */
         val problem: String? = null,
         val retrying: Boolean = false,
+        /** Building the zoomed-out tiles from what was downloaded. */
+        val finishing: Boolean = false,
     )
     var download by mutableStateOf<DownloadState?>(null)
         private set
     private var downloadJob: Job? = null
 
-    fun tileCount(region: OfflineTransit.Region) = offlineStore.tilesOf(region).size
+    fun tileCount(region: OfflineTransit.Region) = offlineStore.unitsOf(region).size
 
     fun visibleAreaRegion(): OfflineTransit.Region? =
         lastViewport?.first?.let { OfflineTransit.visibleArea(it) }
 
     /**
-     * Downloads a region tile by tile: one request at a time with a short pause (Transitous is
-     * volunteer-run), retries, and resumes where it stopped.
+     * Downloads a region square by square, several at once, with every mode at full detail;
+     * then builds the zoomed-out tiles on the phone. Resumes where it stopped.
      */
     fun downloadRegion(region: OfflineTransit.Region) {
         if (downloadJob?.isActive == true) return
-        val tiles = offlineStore.tilesOf(region)
-        offlineStore.record(OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = false))
-        savedRegions = offlineStore.saved()
-        download = DownloadState(region, 0, tiles.size)
+        val units = offlineStore.unitsOf(region)
+        // "Update" on a finished region fetches everything again; otherwise resume.
+        val refresh = savedRegions.any { it.region.id == region.id && it.complete }
+        download = DownloadState(region, 0, units.size)
         downloadJob = viewModelScope.launch {
+            offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = false))
+            savedRegions = offlineStore.saved()
             var done = 0
             var failed = 0
             var problem: String? = null
             var retrying = false
-            fun publish() { download = DownloadState(region, done, tiles.size, failed, problem, retrying) }
-            suspend fun get(level: OfflineTransit.Level, x: Int, y: Int): Boolean = try {
-                val data = offlineStore.fetch(level, x, y) { problem = it; publish() }
-                offlineStore.write(level, x, y, data)
-                problem = null
+            var finishing = false
+            fun publish() { download = DownloadState(region, done, units.size, failed, problem, retrying, finishing) }
+            suspend fun get(x: Int, y: Int): Boolean = try {
+                offlineStore.downloadUnit(x, y, force = refresh) { problem = it; publish() }
                 true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                problem = e.message?.take(60) ?: e.javaClass.simpleName
                 false
             }
-            try {
-                val missed = ArrayList<Triple<OfflineTransit.Level, Int, Int>>()
-                for (tile in tiles) {
-                    val (level, x, y) = tile
-                    if (!offlineStore.has(level, x, y)) {
-                        if (!get(level, x, y)) { failed++; missed += tile }
-                        delay(150)
+            suspend fun runAll(list: List<Pair<Int, Int>>, workers: Int, onResult: (Pair<Int, Int>, Boolean) -> Unit) {
+                val queue = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
+                list.forEach { queue.trySend(it) }
+                queue.close()
+                coroutineScope {
+                    repeat(workers) {
+                        launch { for (u in queue) onResult(u, get(u.first, u.second)) }
                     }
+                }
+            }
+            try {
+                val (finished, todo) = units.partition { !refresh && offlineStore.isUnitDone(it.first, it.second) }
+                done = finished.size
+                publish()
+                val missed = ArrayList<Pair<Int, Int>>()
+                runAll(todo, workers = 4) { u, ok ->
+                    if (!ok) { failed++; missed += u }
                     done++
+                    if (ok && done % 4 == 0) problem = null
                     publish()
                 }
-                // A second, slower pass for whatever failed the first time.
+                // A second, gentler pass for whatever failed the first time.
                 if (missed.isNotEmpty()) {
                     retrying = true
                     publish()
                     delay(10_000)
-                    for ((level, x, y) in missed) {
-                        if (get(level, x, y)) { failed--; publish() }
-                        delay(1_000)
-                    }
+                    runAll(missed, workers = 2) { _, ok -> if (ok) { failed--; publish() } }
                 }
+                finishing = true
+                publish()
+                offlineStore.buildOverview(region)
             } finally {
-                offlineStore.record(OfflineTransit.Saved(region, tiles.size, offlineStore.bytesOf(region), complete = failed == 0 && done == tiles.size))
-                savedRegions = offlineStore.saved()
-                download = null
-                tileCache.clear()
-                shownTiles = emptySet()
-                ensureTransit()
+                withContext(NonCancellable) {
+                    offlineStore.record(OfflineTransit.Saved(region, units.size, offlineStore.bytesOf(region), complete = failed == 0 && finishing))
+                    savedRegions = offlineStore.saved()
+                    download = null
+                    tileCache.clear()
+                    shownTiles = emptySet()
+                    ensureTransit()
+                }
             }
         }
     }
@@ -725,7 +744,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             !transitVisible && !bikeVisible -> null
             overlayError != null -> overlayError
             zoom != null && bikeVisible && !transitVisible && zoom < Tier.Bike.minViewZoom -> "Zoom in to see bike routes"
-            transitVisible && zoom != null && zoom < 11 && TransitMode.Bus in transitModes -> "Zoom in to see buses"
+            transitVisible && zoom != null && zoom < 11 && TransitMode.Bus in transitModes && !viewOffline -> "Zoom in to see buses"
             else -> null
         }
     }
@@ -743,7 +762,10 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         return out.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(12)
     }
 
-    /** Downloaded tiles covering the view at the level for this zoom, or null to go online. */
+    /**
+     * Downloaded tiles covering the view at the level for this zoom, plus online tiles for any
+     * part of the view that isn't downloaded; null when nothing in view is downloaded.
+     */
     private fun offlineTilesFor(area: Bounds, zoom: Double): List<TKey>? {
         if (savedRegions.isEmpty()) return null
         val level = when {
@@ -755,12 +777,19 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val y0 = Tiles.latToY(area.north, level.z); val y1 = Tiles.latToY(area.south, level.z)
         if ((x1 - x0 + 1) * (y1 - y0 + 1) > 220) return null
         val keys = ArrayList<TKey>()
+        val gaps = ArrayList<Bounds>()
         for (x in x0..x1) for (y in y0..y1) {
-            if (!offlineStore.has(level, x, y)) return null
-            keys += TKey(level.z, x, y, offline = true)
+            if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true)
+            else gaps += Tiles.bounds(level.z, x, y)
         }
-        return keys
+        if (keys.isEmpty()) return null
+        if (gaps.isEmpty()) return keys
+        val online = tilesFor(area, zoom).filter { k -> val b = Tiles.bounds(k.z, k.x, k.y); gaps.any { it.intersects(b) } }
+        return keys + online
     }
+
+    /** True when every line in view comes from downloaded data. */
+    private var viewOffline = false
 
     /** Loads the tiles the view needs (one at a time, nearest first) and redraws as they arrive. */
     private fun ensureTransit() {
@@ -768,6 +797,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val (view, zoom) = lastViewport ?: return
         if (zoom < minLineZoom) return
         neededTiles = offlineTilesFor(view.expanded(0.15), zoom) ?: tilesFor(view.expanded(0.15), zoom)
+        viewOffline = neededTiles.isNotEmpty() && neededTiles.all { it.offline }
         val available = neededTiles.filter { it in tileCache }.toSet()
         // Keep the previous lines on screen until at least one tile of the new view is ready.
         if (available.isNotEmpty() && available != shownTiles) rebuildTransit()
