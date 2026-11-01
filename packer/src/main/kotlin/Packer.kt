@@ -25,7 +25,9 @@ fun main(args: Array<String>) {
         "list" -> {
             // `list <file> [ids]`: written to a file so build-tool chatter can't mix in.
             val wanted = args.getOrNull(2)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
-            val ids = OfflineTransit.presets.map { it.id }.filter { wanted.isEmpty() || it in wanted }
+            // Small packs first, so cities and countries are ready long before whole continents.
+            val ordered = OfflineTransit.cities + OfflineTransit.countries + OfflineTransit.continents
+            val ids = ordered.map { it.id }.filter { wanted.isEmpty() || it in wanted }
             File(args[1]).writeText(JSONArray(ids).toString())
         }
         "build" -> build(args[1], File(args[2]))
