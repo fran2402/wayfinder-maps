@@ -5,11 +5,7 @@ package app.wayfinder.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -20,6 +16,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
@@ -32,23 +29,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
-import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.material3.rememberStandardBottomSheetState
-import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,26 +53,44 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.wayfinder.data.LatLon
+import app.wayfinder.data.TravelMode
 import app.wayfinder.map.MapController
 import app.wayfinder.map.MapPalette
 import app.wayfinder.map.RouteDrawing
-import app.wayfinder.ui.components.LayerToggles
+import app.wayfinder.ui.components.LineSheet
+import app.wayfinder.ui.components.LinesSheet
 import app.wayfinder.ui.components.MapHost
-import app.wayfinder.ui.components.TransitPanel
+import app.wayfinder.ui.components.MapToolbar
 import app.wayfinder.ui.components.ModeSelector
 import app.wayfinder.ui.components.RouteSheet
 import app.wayfinder.ui.components.SearchOverlay
 import app.wayfinder.ui.components.SearchPill
 import app.wayfinder.ui.components.TripCard
+import kotlin.math.roundToInt
 
-private val SheetPeek = 300.dp
+/** What the bottom sheet is showing. */
+private enum class SheetMode { None, Trip, Lines, Line }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+private fun peekFor(mode: SheetMode): Dp = when (mode) {
+    SheetMode.Trip -> 440.dp
+    SheetMode.Lines -> 400.dp
+    SheetMode.Line -> 380.dp
+    SheetMode.None -> 0.dp
+}
+
+/**
+ * Bottom-first layout: search (or the trip) on top, everything else in one bottom sheet,
+ * and a floating toolbar + location FAB riding just above the sheet.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Unit) {
     val context = LocalContext.current
@@ -103,14 +114,19 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    val sheetState = rememberStandardBottomSheetState(
-        initialValue = SheetValue.Hidden,
-        skipHiddenState = false,
-    )
-    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+    val picked = vm.highlightedLoaded
+    val sheetMode = when {
+        vm.planning -> SheetMode.Trip
+        vm.transitVisible && picked != null -> SheetMode.Line
+        vm.transitVisible -> SheetMode.Lines
+        else -> SheetMode.None
+    }
+    val peek = peekFor(sheetMode)
 
-    LaunchedEffect(vm.planning) {
-        if (vm.planning) sheetState.partialExpand() else sheetState.hide()
+    val sheetState = rememberStandardBottomSheetState(initialValue = SheetValue.Hidden, skipHiddenState = false)
+    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+    LaunchedEffect(sheetMode) {
+        if (sheetMode == SheetMode.None) sheetState.hide() else sheetState.partialExpand()
     }
 
     // ---------- Keep the map in sync with state ----------
@@ -119,19 +135,6 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.transitVisible, mapReady) { controller.setNetworkVisible(vm.transitVisible) }
     LaunchedEffect(vm.bikeVisible, mapReady) { controller.setBikeVisible(vm.bikeVisible) }
-    // Frame a line when it is picked in the panel.
-    LaunchedEffect(vm.focusRequest) {
-        val b = vm.focusBounds ?: return@LaunchedEffect
-        with(density) {
-            controller.fit(
-                listOf(LatLon(b.south, b.west), LatLon(b.north, b.east)),
-                left = 40.dp.roundToPx(),
-                top = (statusTop + if (vm.planning) 430.dp else 330.dp).roundToPx(),
-                right = 40.dp.roundToPx(),
-                bottom = (if (vm.planning) SheetPeek + 24.dp else 48.dp).roundToPx(),
-            )
-        }
-    }
     LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) {
         controller.setTransit(vm.transitLines, vm.transitStops, vm.transitPills)
     }
@@ -139,10 +142,23 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     LaunchedEffect(vm.transitModes, mapReady) { controller.setTransitModes(vm.transitModes) }
     LaunchedEffect(vm.highlightedLine, vm.transitLines, mapReady) { controller.highlightLine(vm.highlightedLine) }
 
-    // Make sure overlays know the current viewport even before the first camera move ends.
     fun syncViewport() {
         val bounds = controller.visibleBounds() ?: return
         vm.onViewport(bounds, controller.zoom())
+    }
+
+    // Frame a line when it is picked.
+    LaunchedEffect(vm.focusRequest) {
+        val b = vm.focusBounds ?: return@LaunchedEffect
+        with(density) {
+            controller.fit(
+                listOf(LatLon(b.south, b.west), LatLon(b.north, b.east)),
+                left = 40.dp.roundToPx(),
+                top = (statusTop + 96.dp).roundToPx(),
+                right = 40.dp.roundToPx(),
+                bottom = (peekFor(SheetMode.Line) + navBottom + 24.dp).roundToPx(),
+            )
+        }
     }
     LaunchedEffect(vm.itineraries, vm.selected, vm.origin, vm.destination, vm.myLocation, palette, mapReady) {
         val dest = vm.destination
@@ -165,18 +181,12 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
             controller.fit(
                 points,
                 left = 48.dp.roundToPx(),
-                // Trip card + mode selector (+ layer toggles / transit card when shown).
-                top = (statusTop + 200.dp + when {
-                    vm.transitVisible -> 250.dp
-                    vm.transitAvailable || vm.bikeAvailable -> 60.dp
-                    else -> 0.dp
-                }).roundToPx(),
+                top = (statusTop + 140.dp).roundToPx(),
                 right = 48.dp.roundToPx(),
-                bottom = (SheetPeek + 32.dp).roundToPx(),
+                bottom = (peekFor(SheetMode.Trip) + navBottom + 24.dp).roundToPx(),
             )
         }
     }
-    // Centre on the user the first time we learn where they are.
     var centredOnUser by remember { mutableStateOf(false) }
     LaunchedEffect(vm.myLocation, mapReady) {
         val loc = vm.myLocation ?: return@LaunchedEffect
@@ -188,15 +198,15 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
 
     BottomSheetScaffold(
         scaffoldState = scaffoldState,
-        sheetPeekHeight = if (vm.planning) SheetPeek + navBottom else 0.dp,
+        sheetPeekHeight = if (sheetMode == SheetMode.None) 0.dp else peek + navBottom,
         sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
         sheetContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         sheetShadowElevation = 8.dp,
-        sheetSwipeEnabled = vm.planning,
+        sheetSwipeEnabled = sheetMode != SheetMode.None,
         sheetContent = {
-            if (vm.planning) {
-                Box(Modifier.navigationBarsPadding()) {
-                    RouteSheet(
+            Box(Modifier.navigationBarsPadding()) {
+                when (sheetMode) {
+                    SheetMode.Trip -> RouteSheet(
                         mode = vm.mode,
                         itineraries = vm.itineraries,
                         selected = vm.selected,
@@ -204,10 +214,28 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         error = vm.error,
                         onSelect = vm::select,
                         onRetry = vm::plan,
+                        header = {
+                            TripSheetHeader(
+                                mode = vm.mode,
+                                onMode = vm::selectMode,
+                                linesOn = vm.showTransit,
+                                bikesOn = vm.showBike,
+                                onLines = { syncViewport(); vm.toggleTransit() },
+                                onBikes = { syncViewport(); vm.toggleBike() },
+                            )
+                        },
                     )
+                    SheetMode.Lines -> LinesSheet(
+                        lines = vm.legend,
+                        modes = vm.transitModes,
+                        loading = vm.transitLoading,
+                        hint = vm.overlayHint,
+                        onToggleMode = vm::toggleMode,
+                        onLine = vm::highlight,
+                    )
+                    SheetMode.Line -> picked?.let { LineSheet(it, onClose = { vm.highlight(it.info.key) }) }
+                    SheetMode.None -> Spacer(Modifier.height(1.dp))
                 }
-            } else {
-                Spacer(Modifier.height(1.dp))
             }
         },
     ) {
@@ -216,7 +244,7 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 MapHost(
                     controller = controller,
                     palette = palette,
-                    compassTopPx = (statusTop + 260.dp).roundToPx(),
+                    compassTopPx = (statusTop + 140.dp).roundToPx(),
                     attributionBottomPx = (navBottom + 8.dp).roundToPx(),
                     sidePx = 16.dp.roundToPx(),
                     onMapReady = { mapReady = true },
@@ -229,81 +257,55 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                 )
             }
 
-            // ---------- Top: search pill or trip card, then map layers ----------
+            // ---------- Top: search, or the trip ----------
+            AnimatedContent(
+                targetState = vm.destination != null,
+                transitionSpec = {
+                    (fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { -it / 4 })
+                        .togetherWith(fadeOut(motion.fastEffectsSpec()))
+                },
+                label = "top",
+                modifier = Modifier.statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
+            ) { planning ->
+                val dest = vm.destination
+                if (planning && dest != null) {
+                    TripCard(
+                        origin = vm.origin,
+                        destination = dest,
+                        onBack = vm::clearTrip,
+                        onEditOrigin = { vm.openSearch(SearchTarget.From) },
+                        onEditDestination = { vm.openSearch(SearchTarget.To) },
+                        onSwap = vm::swap,
+                    )
+                } else {
+                    SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
+                }
+            }
+
+            // ---------- Bottom: hint + floating toolbar + FAB, riding above the sheet ----------
+            val navBottomPx = with(density) { navBottom.roundToPx() }
+            val gapPx = with(density) { 16.dp.roundToPx() }
             Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .fillMaxWidth(),
-            ) {
-                AnimatedContent(
-                    targetState = vm.destination != null,
-                    transitionSpec = {
-                        (fadeIn(motion.defaultEffectsSpec()) +
-                            slideInVertically(motion.defaultSpatialSpec()) { -it / 4 })
-                            .togetherWith(fadeOut(motion.fastEffectsSpec()))
-                    },
-                    label = "top",
-                ) { planning ->
-                    if (planning) {
-                        val dest = vm.destination
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (dest != null) {
-                                TripCard(
-                                    origin = vm.origin,
-                                    destination = dest,
-                                    onBack = vm::clearTrip,
-                                    onEditOrigin = { vm.openSearch(SearchTarget.From) },
-                                    onEditDestination = { vm.openSearch(SearchTarget.To) },
-                                    onSwap = vm::swap,
-                                )
-                            }
-                            ModeSelector(mode = vm.mode, onSelect = vm::selectMode)
+                    .fillMaxWidth()
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(constraints.copy(minHeight = 0))
+                        val sheetTop = runCatching { sheetState.requireOffset() }.getOrNull()
+                            ?.takeIf { sheetMode != SheetMode.None }
+                            ?: Float.MAX_VALUE
+                        val bottom = minOf(sheetTop.toInt(), constraints.maxHeight - navBottomPx) - gapPx
+                        layout(constraints.maxWidth, constraints.maxHeight) {
+                            placeable.place(0, (bottom - placeable.height).coerceAtLeast(0))
                         }
-                    } else {
-                        SearchPill(onClick = { vm.openSearch(SearchTarget.To) })
                     }
-                }
-
-                AnimatedVisibility(
-                    visible = vm.transitAvailable || vm.bikeAvailable,
-                    enter = fadeIn(motion.defaultEffectsSpec()) + expandVertically(motion.defaultSpatialSpec()),
-                    exit = fadeOut(motion.fastEffectsSpec()) + shrinkVertically(motion.fastSpatialSpec()),
-                ) {
-                    LayerToggles(
-                        showTransitToggle = vm.transitAvailable,
-                        transitLabel = if (vm.planning) "Show lines" else "Public transport",
-                        transitOn = vm.showTransit,
-                        transitLoading = vm.transitLoading && !vm.transitVisible,
-                        showBikeToggle = vm.bikeAvailable,
-                        bikeOn = vm.showBike,
-                        bikeLoading = vm.bikeLoading,
-                        onTransit = { syncViewport(); vm.toggleTransit() },
-                        onBike = { syncViewport(); vm.toggleBike() },
-                    )
-                }
-
-                AnimatedVisibility(
-                    visible = vm.transitVisible,
-                    enter = fadeIn(motion.defaultEffectsSpec()) + expandVertically(motion.defaultSpatialSpec()),
-                    exit = fadeOut(motion.fastEffectsSpec()) + shrinkVertically(motion.fastSpatialSpec()),
-                ) {
-                    TransitPanel(
-                        modes = vm.transitModes,
-                        onToggleMode = vm::toggleMode,
-                        lines = vm.legend,
-                        selected = vm.highlightedInfo,
-                        onLine = vm::highlight,
-                        loading = vm.transitLoading,
-                        hint = vm.overlayHint,
-                    )
-                }
-
+                    .padding(horizontal = 16.dp),
+            ) {
                 AnimatedVisibility(
                     visible = !vm.transitVisible && vm.overlayHint != null,
                     enter = fadeIn() + scaleIn(initialScale = 0.9f),
                     exit = fadeOut() + scaleOut(targetScale = 0.9f),
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -318,36 +320,23 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         )
                     }
                 }
-            }
-
-            // ---------- Floating actions ----------
-            Column(
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                horizontalAlignment = Alignment.End,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = if (vm.planning) SheetPeek + 16.dp else 24.dp)
-                    .navigationBarsPadding(),
-            ) {
-                FloatingActionButton(
-                    onClick = {
+                MapToolbar(
+                    showLayers = !vm.planning,
+                    linesOn = vm.showTransit,
+                    linesLoading = vm.transitLoading,
+                    bikesOn = vm.showBike,
+                    bikesLoading = vm.bikeLoading,
+                    hasLocation = vm.myLocation != null,
+                    onLines = { syncViewport(); vm.toggleTransit() },
+                    onBikes = { syncViewport(); vm.toggleBike() },
+                    onLocate = {
                         val loc = vm.myLocation
                         when {
                             !vm.hasLocationPermission -> requestLocationPermission()
                             loc != null -> controller.flyTo(loc, 16.0)
                         }
                     },
-                    shape = MaterialShapes.Cookie9Sided.toShape(),
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(64.dp),
-                ) {
-                    Icon(
-                        if (vm.myLocation != null) Ph.Filled.GpsFix else Ph.Crosshair,
-                        contentDescription = "My location",
-                        modifier = Modifier.size(26.dp),
-                    )
-                }
+                )
             }
         }
     }
@@ -355,14 +344,11 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     // ---------- Search (covers everything) ----------
     AnimatedVisibility(
         visible = vm.searchTarget != null,
-        enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()) +
-            slideInVertically(MaterialTheme.motionScheme.defaultSpatialSpec()) { -it / 10 },
-        exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()) +
-            slideOutVertically(MaterialTheme.motionScheme.fastSpatialSpec()) { -it / 10 },
+        enter = fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { -it / 10 },
+        exit = fadeOut(motion.fastEffectsSpec()) + slideOutVertically(motion.fastSpatialSpec()) { -it / 10 },
     ) {
-        val target = vm.searchTarget ?: SearchTarget.To
         SearchOverlay(
-            target = target,
+            target = vm.searchTarget ?: SearchTarget.To,
             query = vm.query,
             suggestions = vm.suggestions,
             searching = vm.searching,
@@ -374,5 +360,45 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
 
     BackHandler(enabled = vm.searchTarget != null) { vm.closeSearch() }
-    BackHandler(enabled = vm.searchTarget == null && vm.planning) { vm.clearTrip() }
+    BackHandler(enabled = vm.searchTarget == null && vm.highlightedLine != null) { vm.highlight(vm.highlightedLine) }
+    BackHandler(enabled = vm.searchTarget == null && vm.highlightedLine == null && vm.planning) { vm.clearTrip() }
+}
+
+/** Trip sheet header: travel modes as a connected group, then the section title and layer chip. */
+@Composable
+private fun TripSheetHeader(
+    mode: TravelMode,
+    onMode: (TravelMode) -> Unit,
+    linesOn: Boolean,
+    bikesOn: Boolean,
+    onLines: () -> Unit,
+    onBikes: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ModeSelector(mode = mode, onSelect = onMode)
+        val transit = mode == TravelMode.Transit || mode == TravelMode.Train
+        if (transit || mode == TravelMode.Cycle) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp)) {
+                Text(
+                    if (transit) "Routes" else "Cycling",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight(700)),
+                    modifier = Modifier.weight(1f),
+                )
+                val on = if (transit) linesOn else bikesOn
+                FilterChip(
+                    selected = on,
+                    onClick = if (transit) onLines else onBikes,
+                    label = { Text(if (transit) "Show lines" else "Bike routes") },
+                    leadingIcon = {
+                        Icon(
+                            if (transit) (if (on) Ph.Filled.Bus else Ph.Bus) else (if (on) Ph.Filled.Bicycle else Ph.Bicycle),
+                            contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize),
+                        )
+                    },
+                    shape = CircleShape,
+                )
+            }
+        }
+    }
 }

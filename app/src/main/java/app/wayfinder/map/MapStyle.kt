@@ -92,7 +92,7 @@ object MapStyle {
     /** Layers shown only while the public-transport overlay is switched on. */
     val networkLayers = listOf(
         "net-tiles-casing", "net-tiles", "net-lines-casing", "net-lines",
-        "net-stops", "net-line-labels", "net-stations", "net-focus-casing", "net-focus", "net-stop-labels",
+        "net-stops", "net-line-labels", "net-stations", "net-rail-ties", "net-tram-track", "net-ferry", "net-other", "net-stop-labels",
     )
 
     /** Layers whose opacity follows the highlighted line. */
@@ -268,37 +268,60 @@ object MapStyle {
                 "line-width" to zoomExp(1.3, 4 to 0.5, 9 to 1.0, 13 to 1.6, 18 to 3.0),
                 "line-opacity" to arr("case", arr("==", get("brunnel"), "tunnel"), 0.4, 0.7),
             )))
+        // Public transport lines: colour from the operator, line style from the mode.
+        //   Train: railway (white dashed centre) · Metro: boldest solid · Tram: double track
+        //   Bus: thin solid · Ferry: long dashes · Cable car / funicular: dots
+        fun byMode(train: Double, metro: Double, tram: Double, bus: Double, other: Double) =
+            arr("match", get("mode"), "Train", train, "Metro", metro, "Tram", tram, "Bus", bus, other)
+        val lineWidth = arr("interpolate", arr("linear"), arr("zoom"),
+            9, byMode(2.4, 2.8, 2.0, 1.1, 1.6),
+            13, byMode(5.0, 5.8, 4.2, 2.6, 3.0),
+            18, byMode(8.5, 10.0, 7.5, 5.0, 5.0))
+        val casingWidth = arr("interpolate", arr("linear"), arr("zoom"),
+            9, byMode(4.0, 4.4, 3.4, 2.2, 0.0),
+            13, byMode(8.0, 8.8, 7.0, 4.6, 0.0),
+            18, byMode(13.0, 14.5, 11.5, 8.0, 0.0))
+        val solidModes = arr("match", get("mode"), arr("Ferry", "Other"), false, true)
         add(layer("net-lines-casing", "line", source = SRC_NETWORK, visibility = netVis,
-            layout = obj("line-join" to "round", "line-cap" to "round",
-                "line-sort-key" to get("rank")),
-            paint = obj(
-                "line-color" to p.surface,
-                "line-width" to arr("interpolate", arr("linear"), arr("zoom"),
-                    9, arr("case", arr("<=", get("rank"), 1), 1.5, 3.5),
-                    13, arr("case", arr("<=", get("rank"), 1), 4.0, 6.5),
-                    18, arr("case", arr("<=", get("rank"), 1), 8.0, 12.0)),
-            )))
+            filter = solidModes,
+            layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
+            paint = obj("line-color" to p.surface, "line-width" to casingWidth)))
         add(layer("net-lines", "line", source = SRC_NETWORK, visibility = netVis,
-            layout = obj("line-join" to "round", "line-cap" to "round",
-                "line-sort-key" to get("rank")),
+            filter = solidModes,
+            layout = obj("line-join" to "round", "line-cap" to "round", "line-sort-key" to get("rank")),
             paint = obj(
                 "line-color" to get("color"),
-                "line-opacity" to arr("case", arr("<=", get("rank"), 1), 0.8, 1.0),
-                "line-width" to arr("interpolate", arr("linear"), arr("zoom"),
-                    9, arr("case", arr("<=", get("rank"), 1), 0.8, 2.0),
-                    13, arr("case", arr("<=", get("rank"), 1), 2.2, 3.8),
-                    18, arr("case", arr("<=", get("rank"), 1), 5.0, 7.5)),
+                "line-opacity" to arr("match", get("mode"), "Bus", 0.9, 1.0),
+                "line-width" to lineWidth,
             )))
-
-        // A picked line: drawn thicker on top; filtered to it at runtime (nothing by default).
-        add(layer("net-focus-casing", "line", source = SRC_NETWORK, visibility = netVis,
-            filter = arr("boolean", false),
+        add(layer("net-rail-ties", "line", source = SRC_NETWORK, visibility = netVis, minzoom = 10.0,
+            filter = eq("mode", "Train"),
+            layout = obj("line-join" to "round"),
+            paint = obj(
+                "line-color" to p.surface,
+                "line-width" to zoomLinear(10 to 0.8, 13 to 1.4, 18 to 2.2),
+                "line-dasharray" to arr("literal", arr(3.0, 3.0)),
+            )))
+        add(layer("net-tram-track", "line", source = SRC_NETWORK, visibility = netVis, minzoom = 11.0,
+            filter = eq("mode", "Tram"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
-            paint = obj("line-color" to p.surface, "line-width" to zoomLinear(9 to 6.0, 13 to 11.0, 18 to 18.0))))
-        add(layer("net-focus", "line", source = SRC_NETWORK, visibility = netVis,
-            filter = arr("boolean", false),
+            paint = obj("line-color" to p.surface, "line-width" to zoomLinear(11 to 0.6, 13 to 1.0, 18 to 1.8))))
+        add(layer("net-ferry", "line", source = SRC_NETWORK, visibility = netVis,
+            filter = eq("mode", "Ferry"),
             layout = obj("line-join" to "round", "line-cap" to "round"),
-            paint = obj("line-color" to get("color"), "line-width" to zoomLinear(9 to 3.5, 13 to 6.5, 18 to 11.0))))
+            paint = obj(
+                "line-color" to get("color"),
+                "line-width" to zoomLinear(9 to 1.6, 13 to 3.0, 18 to 5.0),
+                "line-dasharray" to arr("literal", arr(3.0, 2.0)),
+            )))
+        add(layer("net-other", "line", source = SRC_NETWORK, visibility = netVis,
+            filter = eq("mode", "Other"),
+            layout = obj("line-join" to "round", "line-cap" to "round"),
+            paint = obj(
+                "line-color" to get("color"),
+                "line-width" to zoomLinear(9 to 2.5, 13 to 4.5, 18 to 7.0),
+                "line-dasharray" to arr("literal", arr(0.01, 2.0)),
+            )))
 
         // ---------- Route ----------
         add(layer("route-alt", "line", source = SRC_ROUTE_ALT,

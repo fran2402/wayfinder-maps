@@ -2,7 +2,6 @@
 
 package app.wayfinder.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -140,59 +139,49 @@ private val modeOptions
         ModeOption(TravelMode.Cycle, "Cycle", Ph.PersonSimpleBike, Ph.Filled.PersonSimpleBike),
     )
 
-/** Material 3 Expressive connected button group; the selected mode grows to reveal its label. */
+/** Travel modes as a connected button group (icon over label); the selected one widens and morphs. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ModeSelector(mode: TravelMode, onSelect: (TravelMode) -> Unit, modifier: Modifier = Modifier) {
     val options = modeOptions
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shadowElevation = 6.dp,
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
         modifier = modifier.fillMaxWidth(),
     ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-            modifier = Modifier.padding(6.dp),
-        ) {
-            options.forEachIndexed { index, option ->
-                val checked = option.mode == mode
-                val weight by animateFloatAsState(
-                    targetValue = if (checked) 1.9f else 1f,
-                    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
-                    label = "modeWeight",
-                )
-                ToggleButton(
-                    checked = checked,
-                    onCheckedChange = { onSelect(option.mode) },
-                    shapes = when (index) {
-                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                        options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                    },
-                    colors = ToggleButtonDefaults.toggleButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        checkedContainerColor = MaterialTheme.colorScheme.primary,
-                        checkedContentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp),
-                    modifier = Modifier
-                        .weight(weight)
-                        .height(52.dp)
-                        .semantics { role = Role.RadioButton },
-                ) {
+        options.forEachIndexed { index, option ->
+            val checked = option.mode == mode
+            val weight by animateFloatAsState(
+                targetValue = if (checked) 1.3f else 1f,
+                animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                label = "modeWeight",
+            )
+            ToggleButton(
+                checked = checked,
+                onCheckedChange = { onSelect(option.mode) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                colors = ToggleButtonDefaults.toggleButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    checkedContainerColor = MaterialTheme.colorScheme.primary,
+                    checkedContentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                contentPadding = PaddingValues(0.dp),
+                modifier = Modifier
+                    .weight(weight)
+                    .height(56.dp)
+                    .semantics { role = Role.RadioButton },
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         if (checked) option.selectedIcon else option.icon,
-                        contentDescription = option.label,
-                        modifier = Modifier.size(22.dp),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
                     )
-                    AnimatedVisibility(visible = checked) {
-                        Row {
-                            Spacer(Modifier.width(8.dp))
-                            Text(option.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                        }
-                    }
+                    Text(option.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 }
             }
         }

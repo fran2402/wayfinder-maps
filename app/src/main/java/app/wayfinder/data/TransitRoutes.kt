@@ -16,7 +16,7 @@ import kotlin.math.pow
 import kotlin.math.roundToLong
 
 /** A line in the loaded area, with the bounds of its geometry (for "lines in view"). */
-data class LoadedLine(val info: LineInfo, val bounds: Bounds)
+data class LoadedLine(val info: LineInfo, val bounds: Bounds, val stops: List<String> = emptyList())
 
 /** Public transport routes for an area, as GeoJSON plus the line list. */
 data class TransitData(
@@ -303,12 +303,17 @@ object TransitRoutes {
 
             if (ref.isNotBlank()) {
                 val b = Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble())
+                val stopNames = orderedStops(route, raw)
                 val prev = loaded[key]
                 loaded[key] = if (prev == null) {
-                    LoadedLine(LineInfo(key, ref, route.name, osmRoute, mode, color, text), b)
+                    LoadedLine(LineInfo(key, ref, route.name, osmRoute, mode, color, text), b, stopNames)
                 } else {
                     val p = prev.bounds
-                    prev.copy(bounds = Bounds(minOf(p.south, b.south), minOf(p.west, b.west), maxOf(p.north, b.north), maxOf(p.east, b.east)))
+                    prev.copy(
+                        bounds = Bounds(minOf(p.south, b.south), minOf(p.west, b.west), maxOf(p.north, b.north), maxOf(p.east, b.east)),
+                        // Variants of one line: keep the longest stop sequence.
+                        stops = if (stopNames.size > prev.stops.size) stopNames else prev.stops,
+                    )
                 }
             }
         }
@@ -338,6 +343,19 @@ object TransitRoutes {
             zoom = zoom,
             zoomFiltered = raw.zoomFiltered || raw.routes.size > MAX_ROUTES,
         )
+    }
+
+    /** Stop names in travel order, from the route's consecutive segments. */
+    private fun orderedStops(route: RawRoute, raw: Raw): List<String> {
+        val out = ArrayList<String>()
+        var i = 0
+        while (i + 2 < route.segments.size) {
+            val from = route.segments[i]; val to = route.segments[i + 1]
+            if (out.isEmpty()) raw.stopNames.getOrNull(from)?.let { out += it }
+            raw.stopNames.getOrNull(to)?.let { if (out.lastOrNull() != it) out += it }
+            i += 3
+        }
+        return out
     }
 
     /** Map image name for a line's number badge. */

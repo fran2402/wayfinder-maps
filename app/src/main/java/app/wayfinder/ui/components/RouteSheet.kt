@@ -68,10 +68,12 @@ fun RouteSheet(
     error: String?,
     onSelect: (Int) -> Unit,
     onRetry: () -> Unit,
+    header: @Composable () -> Unit = {},
 ) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
     val isTransit = mode == TravelMode.Transit || mode == TravelMode.Train
     Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) { header() }
         when {
             loading -> Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -122,13 +124,6 @@ fun RouteSheet(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                item {
-                    Text(
-                        if (mode == TravelMode.Train) "Train connections" else "Routes",
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 4.dp),
-                    )
-                }
                 itemsIndexed(itineraries) { index, itinerary ->
                     TransitCard(itinerary, selected = index == selected, onClick = { onSelect(index) })
                 }

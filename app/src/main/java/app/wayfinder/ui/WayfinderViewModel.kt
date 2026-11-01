@@ -105,6 +105,9 @@ class WayfinderViewModel : ViewModel() {
     /** Key of the line picked in the line pills, or null for all lines. */
     var highlightedLine by mutableStateOf<String?>(null)
         private set
+    /** The picked line with its stops, for the line sheet. */
+    val highlightedLoaded: app.wayfinder.data.LoadedLine?
+        get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key } }
     /** The picked line's details, for the panel. */
     val highlightedInfo: LineInfo?
         get() = highlightedLine?.let { key -> transitData?.routes?.firstOrNull { it.info.key == key }?.info }

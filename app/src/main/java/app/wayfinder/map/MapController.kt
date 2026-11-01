@@ -228,9 +228,15 @@ class MapController(private val context: Context) {
         val key = highlightedLine
         val filter = if (key == null) byMode
         else "[\"all\",$byMode,[\"==\",[\"get\",\"key\"],${JSONObject.quote(key)}]]"
-        // Picked line: drawn by the thicker focus layers, with its stops named.
-        listOf("net-lines-casing", "net-lines").forEach { s.getLayer(it)?.filter(if (key == null) byMode else none) }
-        listOf("net-focus-casing", "net-focus", "net-stop-labels").forEach { s.getLayer(it)?.filter(if (key == null) none else filter) }
+        // Each line layer keeps its own mode condition; mode chips and a picked line narrow it.
+        val solid = "[\"match\",[\"get\",\"mode\"],[\"Ferry\",\"Other\"],false,true]"
+        fun only(mode: String) = "[\"==\",[\"get\",\"mode\"],\"$mode\"]"
+        mapOf(
+            "net-lines-casing" to solid, "net-lines" to solid,
+            "net-rail-ties" to only("Train"), "net-tram-track" to only("Tram"),
+            "net-ferry" to only("Ferry"), "net-other" to only("Other"),
+        ).forEach { (layer, base) -> s.getLayer(layer)?.filter("[\"all\",$base,$filter]") }
+        s.getLayer("net-stop-labels")?.filter(if (key == null) none else filter)
         s.getLayer("net-stops")?.filter(filter)
         s.getLayer("net-line-labels")?.filter("[\"all\",[\"has\",\"pill\"],$filter]")
 

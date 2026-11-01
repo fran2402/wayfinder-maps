@@ -39,11 +39,11 @@ data class Bounds(val south: Double, val west: Double, val north: Double, val ea
 
 /** Public-transport categories the user can show or hide. */
 enum class TransitMode(val label: String, val colorArgb: Int) {
-    Train("Trains", 0xFF3D4A5C.toInt()),
+    Train("Trains", 0xFF2F3A4A.toInt()),
     Metro("Metro", 0xFF1E63E9.toInt()),
     Tram("Trams", 0xFFE8473F.toInt()),
     Bus("Buses", 0xFF7E57C2.toInt()),
-    Ferry("Ferries", 0xFF0091D5.toInt()),
+    Ferry("Ferries", 0xFF0068A8.toInt()),
     Other("Other", 0xFFB0761E.toInt());
 
     companion object {
