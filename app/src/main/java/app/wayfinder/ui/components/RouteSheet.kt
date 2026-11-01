@@ -160,6 +160,7 @@ fun RouteSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ItineraryCard(itinerary: Itinerary, mode: TravelMode, selected: Boolean, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme

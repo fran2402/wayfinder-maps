@@ -124,7 +124,7 @@ class MapController(private val context: Context) {
 
     fun visibleBounds(): Bounds? {
         val b = map?.projection?.visibleRegion?.latLngBounds ?: return null
-        return Bounds(b.latSouth, b.lonWest, b.latNorth, b.lonEast)
+        return Bounds(b.getLatSouth(), b.getLonWest(), b.getLatNorth(), b.getLonEast())
     }
 
     fun zoom(): Double = map?.cameraPosition?.zoom ?: 0.0
