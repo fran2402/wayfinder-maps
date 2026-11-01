@@ -187,6 +187,18 @@ class MapController(private val context: Context) {
         )
     }
 
+    /** Key of the transit line under the screen point of [pos], if any. */
+    fun lineAt(pos: LatLon): String? {
+        val map = map ?: return null
+        val pt = map.projection.toScreenLocation(org.maplibre.android.geometry.LatLng(pos.lat, pos.lon))
+        val r = 12f * context.resources.displayMetrics.density
+        val box = android.graphics.RectF(pt.x - r, pt.y - r, pt.x + r, pt.y + r)
+        val features = runCatching {
+            map.queryRenderedFeatures(box, "net-line-labels", "net-lines", "net-ferry", "net-other")
+        }.getOrNull().orEmpty()
+        return features.firstOrNull { it.hasProperty("key") }?.getStringProperty("key")
+    }
+
     /** Pin for the place sheet's place (null hides it). */
     fun setSelectedPlace(pos: LatLon?) {
         selectedPlace = pos

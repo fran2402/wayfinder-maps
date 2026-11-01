@@ -181,8 +181,29 @@ class WayfinderViewModel : ViewModel() {
 
     private var transitData: TransitData? = null
     private var transitJob: Job? = null
-    private var transitPending = false
-    private var transitRetryAt = 0L
+    private var rebuildJob: Job? = null
+    private var retryJob: Job? = null
+
+    /** Transit map tiles: fetched one at a time, cached (LRU), merged for the view. */
+    private data class TKey(val z: Int, val x: Int, val y: Int)
+    private val tileCache = object : LinkedHashMap<TKey, app.wayfinder.data.TileData>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, app.wayfinder.data.TileData>?) = size > 40
+    }
+    private val tileFailedAt = HashMap<TKey, Long>()
+    private var neededTiles: List<TKey> = emptyList()
+    private var shownTiles: Set<TKey> = emptySet()
+
+    /** Upcoming departures for the picked line at one of its stops. */
+    data class DepartureBoard(
+        val lineKey: String,
+        val stop: app.wayfinder.data.StopRef,
+        val loading: Boolean,
+        val items: List<app.wayfinder.data.Departure>,
+        val error: String?,
+    )
+    var departures by mutableStateOf<DepartureBoard?>(null)
+        private set
+    private var departuresJob: Job? = null
     private val bikeStore = RouteStore()
     private val loadedTiles = HashSet<TileId>()
     private val retryAfter = HashMap<Tier, Long>()
@@ -489,7 +510,7 @@ class WayfinderViewModel : ViewModel() {
         showTransit = !showTransit
         if (!showTransit) highlightedLine = null
         overlayError = null
-        transitRetryAt = 0L
+        tileFailedAt.clear()
         ensureTransit()
         updateHint()
     }
@@ -518,10 +539,45 @@ class WayfinderViewModel : ViewModel() {
 
     fun highlight(key: String?) {
         highlightedLine = if (highlightedLine == key) null else key
+        departures = null
         val picked = highlightedLine ?: return
-        transitData?.routes?.firstOrNull { it.info.key == picked }?.let {
-            focusBounds = it.bounds
+        transitData?.routes?.firstOrNull { it.info.key == picked }?.let { line ->
+            focusBounds = line.bounds
             focusRequest++
+            // Show departures from the stop nearest to the user (or the map centre).
+            val ref = myLocation ?: lastViewport?.first?.let { LatLon((it.south + it.north) / 2, (it.west + it.east) / 2) }
+            val nearest = if (ref == null) line.stops.firstOrNull() else line.stops.minByOrNull {
+                val dLat = it.lat - ref.lat; val dLon = (it.lon - ref.lon) * Math.cos(Math.toRadians(ref.lat))
+                dLat * dLat + dLon * dLon
+            }
+            nearest?.let { showDepartures(it) }
+        }
+    }
+
+    /** Opens a line picked on the map (never toggles it off). */
+    fun openLine(key: String) {
+        if (highlightedLine != key) highlight(key)
+    }
+
+    fun showDepartures(stop: app.wayfinder.data.StopRef) {
+        val line = highlightedLoaded ?: return
+        departuresJob?.cancel()
+        val board = DepartureBoard(line.info.key, stop, loading = true, items = emptyList(), error = null)
+        departures = board
+        if (stop.id.isBlank()) {
+            departures = board.copy(loading = false, error = "No timetable for this stop")
+            return
+        }
+        departuresJob = viewModelScope.launch {
+            departures = try {
+                val now = System.currentTimeMillis() - 60_000
+                val items = app.wayfinder.data.Departures.load(stop.id, line.info.ref).filter { it.timeMs >= now }.take(12)
+                board.copy(loading = false, items = items, error = if (items.isEmpty()) "No upcoming departures of this line here" else null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                board.copy(loading = false, error = "Couldn't load departures")
+            }
         }
     }
 
@@ -556,42 +612,76 @@ class WayfinderViewModel : ViewModel() {
 
     // ---------- Public transport (Transitous) ----------
 
-    /** Fetches routes for the view unless what we have already covers it. One request at a time. */
+    /** Tiles one zoom level coarser than the view, so a few requests cover the screen. */
+    private fun tilesFor(area: Bounds, zoom: Double): List<TKey> {
+        val z = (kotlin.math.floor(zoom).toInt() - 1).coerceIn(2, 13)
+        val x0 = Tiles.lonToX(area.west, z); val x1 = Tiles.lonToX(area.east, z)
+        val y0 = Tiles.latToY(area.north, z); val y1 = Tiles.latToY(area.south, z)
+        val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0
+        val out = ArrayList<TKey>()
+        for (x in x0..x1) for (y in y0..y1) out += TKey(z, x, y)
+        return out.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(12)
+    }
+
+    /** Loads the tiles the view needs (one at a time, nearest first) and redraws as they arrive. */
     private fun ensureTransit() {
         if (!transitVisible) return
         val (view, zoom) = lastViewport ?: return
-        val have = transitData
-        val covered = have != null && have.area.contains(view) &&
-            (!have.zoomFiltered || kotlin.math.floor(zoom) <= kotlin.math.floor(have.zoom))
-        if (covered) return
-        if (System.currentTimeMillis() < transitRetryAt) return
-        if (transitJob?.isActive == true) {
-            transitPending = true
-            return
-        }
+        neededTiles = tilesFor(view.expanded(0.15), zoom)
+        val available = neededTiles.filter { it in tileCache }.toSet()
+        // Keep the previous lines on screen until at least one tile of the new view is ready.
+        if (available.isNotEmpty() && available != shownTiles) rebuildTransit()
+        if (transitJob?.isActive == true) return
         transitJob = viewModelScope.launch {
-            transitLoading = true
-            try {
-                val data = TransitRoutes.load(view.expanded(0.25), zoom)
-                transitData = data
-                transitPills = data.routes.map { it.info }
-                transitLines = data.lines
-                transitStops = data.stops
-                overlayError = null
-                refreshLegend()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                transitRetryAt = System.currentTimeMillis() + 5_000
-                overlayError = "Couldn't load transit lines: ${e.message ?: e.javaClass.simpleName}. Move the map to retry."
-            } finally {
-                transitLoading = false
+            var failed = false
+            while (true) {
+                val now = System.currentTimeMillis()
+                val next = neededTiles.firstOrNull { key ->
+                    key !in tileCache && (tileFailedAt[key]?.let { now - it > 8_000 } ?: true)
+                } ?: break
+                transitLoading = true
+                try {
+                    val bounds = Tiles.bounds(next.z, next.x, next.y)
+                    // Ask for one level more detail than the view, so lines show from further out.
+                    val data = TransitRoutes.loadTile(bounds, (next.z + 2).coerceAtMost(16))
+                    tileCache[next] = data
+                    tileFailedAt.remove(next)
+                    overlayError = null
+                    if (next in neededTiles) rebuildTransit()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    tileFailedAt[next] = now
+                    failed = true
+                    overlayError = "Some transit lines didn't load (${e.message ?: e.javaClass.simpleName}). Retrying…"
+                }
+                updateHint()
             }
+            transitLoading = false
             updateHint()
-            if (transitPending) {
-                transitPending = false
-                ensureTransit()
+            if (failed) {
+                retryJob?.cancel()
+                retryJob = viewModelScope.launch {
+                    delay(9_000)
+                    ensureTransit()
+                }
             }
+        }
+    }
+
+    private fun rebuildTransit() {
+        val keys = neededTiles
+        val tiles = keys.mapNotNull { tileCache[it] }
+        shownTiles = keys.filter { it in tileCache }.toSet()
+        rebuildJob?.cancel()
+        rebuildJob = viewModelScope.launch {
+            val data = withContext(storeThread) { TransitRoutes.merge(tiles) }
+            transitData = data
+            transitPills = data.routes.map { it.info }
+            transitLines = data.lines
+            transitStops = data.stops
+            refreshLegend()
+            updateHint()
         }
     }
 
@@ -600,7 +690,10 @@ class WayfinderViewModel : ViewModel() {
         val routes = transitData?.routes ?: return
         val lines = TransitRoutes.legend(routes, transitModes, view)
         legend = lines
-        if (highlightedLine != null && lines.none { it.key == highlightedLine }) highlightedLine = null
+        if (highlightedLine != null && routes.none { it.info.key == highlightedLine }) {
+            highlightedLine = null
+            departures = null
+        }
         updateHint()
     }
 

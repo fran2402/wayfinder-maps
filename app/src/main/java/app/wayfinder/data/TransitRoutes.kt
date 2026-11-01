@@ -15,43 +15,67 @@ import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToLong
 
-/** A line in the loaded area, with the bounds of its geometry (for "lines in view"). */
-data class LoadedLine(val info: LineInfo, val bounds: Bounds, val stops: List<String> = emptyList())
+/** A stop of a line, as Transitous identifies it (the id is needed for departures). */
+data class StopRef(val id: String, val name: String, val lat: Double, val lon: Double)
 
-/** Public transport routes for an area, as GeoJSON plus the line list. */
+/** A line in the loaded area, with the bounds of its geometry (for "lines in view"). */
+data class LoadedLine(val info: LineInfo, val bounds: Bounds, val stops: List<StopRef> = emptyList())
+
+/** One route as parsed from one map tile; merged across tiles by [key]. */
+class TileRoute(
+    val key: String,
+    val mode: TransitMode,
+    val osmRoute: String,
+    val ref: String,
+    val name: String,
+    val color: Int,
+    val text: Int,
+    val rank: Int,
+    /** Simplified shapes as [lat, lon, …]; [partIds] are content hashes for de-duplication. */
+    val parts: List<FloatArray>,
+    val partIds: IntArray,
+    val stops: List<StopRef>,
+    val bounds: Bounds,
+)
+
+/** Everything one tile request returned. */
+class TileData(val routes: List<TileRoute>, val zoomFiltered: Boolean)
+
+/** The merged network for the loaded tiles, as GeoJSON plus the line list. */
 data class TransitData(
     val lines: String,
     val stops: String,
     val routes: List<LoadedLine>,
-    val area: Bounds,
-    val zoom: Double,
     /** True when the server left out minor routes because of the zoom level. */
     val zoomFiltered: Boolean,
 )
 
 /**
- * Every public transport route in an area, with GTFS line colours and numbers, from
- * Transitous (MOTIS `/api/experimental/map/routes`). The server thins the network by
- * zoom: long-distance rail when zoomed out, metro, trams and buses as you zoom in.
+ * Public transport routes with GTFS line colours and numbers from Transitous
+ * (MOTIS `/api/experimental/map/routes`), fetched per map tile and merged.
  *
- * Responses for busy areas are large, so they are parsed as a stream into compact arrays
- * (never a JSON object tree), shapes are simplified to the current zoom, and the GeoJSON
- * is written straight into one StringBuilder.
+ * Responses are stream-parsed into compact arrays; shapes are simplified to the tile's zoom;
+ * stop-to-stop straight chords (routes without real shapes) are dropped so they cannot
+ * streak across the map.
  */
 object TransitRoutes {
     private const val URL = "https://api.transitous.org/api/experimental/map/routes"
 
-    /** Upper bound on drawn routes, to keep memory and rendering in check. */
-    private const val MAX_ROUTES = 1500
+    /** Upper bound on routes kept per tile. */
+    private const val MAX_ROUTES = 1200
+
+    /** Straight two-point segments longer than this are chords, not track. */
+    private const val MAX_CHORD_M = 1000.0
 
     private val client = Http.client.newBuilder()
         .callTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    suspend fun load(area: Bounds, zoom: Double): TransitData {
+    /** Loads one tile; [zoom] is the detail level asked of the server. */
+    suspend fun loadTile(area: Bounds, zoom: Int): TileData {
         val url = URL.toHttpUrl().newBuilder()
-            .addQueryParameter("zoom", String.format(Locale.US, "%.1f", zoom))
+            .addQueryParameter("zoom", zoom.toString())
             .addQueryParameter("min", String.format(Locale.US, "%.6f,%.6f", area.south, area.west))
             .addQueryParameter("max", String.format(Locale.US, "%.6f,%.6f", area.north, area.east))
             .build()
@@ -62,7 +86,7 @@ object TransitRoutes {
                 call.execute().use { response ->
                     if (!response.isSuccessful) throw HttpException(response.code, "HTTP ${response.code}")
                     val body = response.body ?: throw HttpException(response.code, "empty response")
-                    parse(body.charStream(), area, zoom)
+                    parse(body.charStream(), zoom.toDouble())
                 }
             } finally {
                 handle?.dispose()
@@ -84,25 +108,21 @@ object TransitRoutes {
 
     private class Raw {
         val routes = ArrayList<RawRoute>()
-        /** Decoded polylines as [lat0, lon0, lat1, lon1, …]. */
+        /** Decoded, simplified polylines as [lat0, lon0, …]; null when dropped. */
         val polylines = ArrayList<FloatArray?>()
-        /** Stops as [lat, lon] pairs, index-aligned with the response's stop array. */
-        var stopCoords = FloatArray(0)
-        var stopCount = 0
-        var stopNames: Array<String?> = emptyArray()
+        val stops = ArrayList<StopRef?>()
         var zoomFiltered = false
     }
 
-    fun parse(reader: Reader, area: Bounds, zoom: Double): TransitData {
+    fun parse(reader: Reader, zoom: Double): TileData {
         val raw = Raw()
-        // Simplify to roughly a third of a screen pixel at the requested zoom.
-        val tolerance = (360.0 / (256.0 * 2.0.pow(zoom))) / 3.0
+        val tolerance = ((360.0 / (256.0 * 2.0.pow(zoom))) / 3.0).toFloat()
         JsonReader(reader).use { r ->
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
                     "routes" -> readRoutes(r, raw)
-                    "polylines" -> readPolylines(r, raw, tolerance.toFloat())
+                    "polylines" -> readPolylines(r, raw, tolerance)
                     "stops" -> readStops(r, raw)
                     "zoomFiltered" -> raw.zoomFiltered = r.nextBooleanOrFalse()
                     else -> r.skipValue()
@@ -110,7 +130,7 @@ object TransitRoutes {
             }
             r.endObject()
         }
-        return build(raw, area, zoom)
+        return build(raw)
     }
 
     private fun readRoutes(r: JsonReader, raw: Raw) {
@@ -197,40 +217,36 @@ object TransitRoutes {
             }
             r.endObject()
             raw.polylines += points?.takeIf { it.isNotEmpty() }?.let {
-                runCatching { simplify(decodeFloats(it, precision), tolerance) }.getOrNull()
+                runCatching {
+                    val pts = decodeFloats(it, precision)
+                    // A long two-point segment is a stop-to-stop chord (no real shape): drop it.
+                    if (pts.size == 4 && metres(pts[0], pts[1], pts[2], pts[3]) > MAX_CHORD_M) null
+                    else simplify(pts, tolerance)
+                }.getOrNull()
             }
         }
         r.endArray()
     }
 
     private fun readStops(r: JsonReader, raw: Raw) {
-        var coords = FloatArray(512)
-        val names = ArrayList<String?>()
-        var n = 0
         r.beginArray()
         while (r.hasNext()) {
-            var lat = Float.NaN; var lon = Float.NaN; var name: String? = null
+            var lat = Double.NaN; var lon = Double.NaN; var name = ""; var id = ""
             r.beginObject()
             while (r.hasNext()) {
                 when (r.nextName()) {
-                    "lat" -> lat = r.nextDouble().toFloat()
-                    "lon" -> lon = r.nextDouble().toFloat()
-                    "name" -> name = r.nextStringOrEmpty().takeIf { it.isNotBlank() }
+                    "lat" -> lat = r.nextDouble()
+                    "lon" -> lon = r.nextDouble()
+                    "name" -> name = r.nextStringOrEmpty()
+                    "stopId" -> id = r.nextStringOrEmpty()
                     else -> r.skipValue()
                 }
             }
             r.endObject()
-            if (n + 2 > coords.size) coords = coords.copyOf(coords.size * 2)
-            coords[n++] = lat; coords[n++] = lon
-            names += name
+            raw.stops += if (lat.isNaN() || lon.isNaN()) null else StopRef(id, name, lat, lon)
         }
         r.endArray()
-        raw.stopCoords = coords.copyOf(n)
-        raw.stopCount = n / 2
-        raw.stopNames = names.toTypedArray()
     }
-
-    // ---------- Output ----------
 
     private fun classify(mode: String): Pair<TransitMode, String> = when (mode) {
         "TRAM", "CABLE_CAR" -> TransitMode.Tram to "tram"
@@ -241,121 +257,123 @@ object TransitRoutes {
         else -> TransitMode.Train to "train" // RAIL, SUBURBAN, REGIONAL_RAIL, HIGHSPEED_RAIL, …
     }
 
-    private fun build(raw: Raw, area: Bounds, zoom: Double): TransitData {
-        val lines = StringBuilder(1 shl 16).append("""{"type":"FeatureCollection","features":[""")
-        var firstFeature = true
-        val loaded = LinkedHashMap<String, LoadedLine>()
-        // Best (highest-rank) route per stop: rank, colour, key, mode.
-        val stopRank = IntArray(raw.stopCount) { -1 }
-        val stopInfo = arrayOfNulls<String>(raw.stopCount)
-
-        // Most important routes first, so the cap drops buses before trains.
+    private fun build(raw: Raw): TileData {
         val ordered = raw.routes.sortedByDescending { Palette.rank(classify(it.mode).second, "") }
+        val out = ArrayList<TileRoute>()
         for (route in ordered.take(MAX_ROUTES)) {
             val (mode, osmRoute) = classify(route.mode)
-            // Only real line numbers become badges; long descriptive names stay off the map.
             val ref = route.ref.takeIf { it.length <= 10 } ?: ""
             val color = route.color ?: mode.colorArgb
             val text = route.text?.takeIf { it != color }
                 ?: if (Palette.luminance(color) > 0.6) 0xFF1B1B1F.toInt() else 0xFFFFFFFF.toInt()
-            val rank = Palette.rank(osmRoute, "")
             val key = "${mode.name}|${ref.ifBlank { route.name }}|${Palette.hex(color)}"
-            val colorHex = Palette.hex(color)
 
-            var s = 90f; var n = -90f; var w = 180f; var e = -180f
-            val geometry = StringBuilder()
+            val parts = ArrayList<FloatArray>()
+            val ids = ArrayList<Int>()
+            val stops = ArrayList<StopRef>()
             val used = HashSet<Int>()
+            var s = 90f; var n = -90f; var w = 180f; var e = -180f
             var i = 0
             while (i + 2 < route.segments.size) {
                 val from = route.segments[i]; val to = route.segments[i + 1]; val pi = route.segments[i + 2]
                 i += 3
-                for (stop in intArrayOf(from, to)) {
-                    if (stop in 0 until raw.stopCount && stopRank[stop] < rank) {
-                        stopRank[stop] = rank
-                        stopInfo[stop] = """"color":"$colorHex","rank":$rank,"key":${quote(key)},"mode":"${mode.name}""""
-                    }
-                }
+                if (stops.isEmpty()) raw.stops.getOrNull(from)?.let { stops += it }
+                raw.stops.getOrNull(to)?.let { if (stops.lastOrNull()?.id != it.id) stops += it }
                 val pts = raw.polylines.getOrNull(pi) ?: continue
                 if (pts.size < 4 || !used.add(pi)) continue
-                if (geometry.isNotEmpty()) geometry.append(',')
-                geometry.append('[')
+                parts += pts
+                ids += pts.contentHashCode()
                 var k = 0
                 while (k < pts.size) {
                     val lat = pts[k]; val lon = pts[k + 1]
-                    if (k > 0) geometry.append(',')
-                    geometry.append('[').appendCoord(lon).append(',').appendCoord(lat).append(']')
                     if (lat < s) s = lat; if (lat > n) n = lat; if (lon < w) w = lon; if (lon > e) e = lon
                     k += 2
                 }
-                geometry.append(']')
             }
-            if (geometry.isEmpty()) continue
+            if (parts.isEmpty()) continue
+            out += TileRoute(
+                key = key, mode = mode, osmRoute = osmRoute, ref = ref, name = route.name,
+                color = color, text = text, rank = Palette.rank(osmRoute, ""),
+                parts = parts, partIds = ids.toIntArray(), stops = stops,
+                bounds = Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()),
+            )
+        }
+        return TileData(out, raw.zoomFiltered || raw.routes.size > MAX_ROUTES)
+    }
 
-            if (!firstFeature) lines.append(',')
-            firstFeature = false
+    /** Merges tiles into one network: shapes de-duplicated per line, longest stop list kept. */
+    fun merge(tiles: Collection<TileData>): TransitData {
+        class Acc(val first: TileRoute) {
+            val parts = ArrayList<FloatArray>()
+            val ids = HashSet<Int>()
+            var stops: List<StopRef> = first.stops
+            var s = first.bounds.south; var w = first.bounds.west; var n = first.bounds.north; var e = first.bounds.east
+        }
+        val byKey = LinkedHashMap<String, Acc>()
+        var zoomFiltered = false
+        for (tile in tiles) {
+            zoomFiltered = zoomFiltered || tile.zoomFiltered
+            for (r in tile.routes) {
+                val acc = byKey.getOrPut(r.key) { Acc(r) }
+                r.parts.forEachIndexed { k, part -> if (acc.ids.add(r.partIds[k])) acc.parts += part }
+                if (r.stops.size > acc.stops.size) acc.stops = r.stops
+                acc.s = minOf(acc.s, r.bounds.south); acc.w = minOf(acc.w, r.bounds.west)
+                acc.n = maxOf(acc.n, r.bounds.north); acc.e = maxOf(acc.e, r.bounds.east)
+            }
+        }
+
+        val lines = StringBuilder(1 shl 16).append("""{"type":"FeatureCollection","features":[""")
+        val stopFeatures = LinkedHashMap<String, Pair<Int, String>>() // id -> (rank, json)
+        val loaded = ArrayList<LoadedLine>()
+        var first = true
+        for ((key, acc) in byKey) {
+            val r = acc.first
+            val colorHex = Palette.hex(r.color)
+            if (!first) lines.append(',')
+            first = false
             lines.append("""{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[""")
-                .append(geometry)
-                .append("""]},"properties":{"key":""").append(quote(key))
-                .append(""","route":"$osmRoute","mode":"${mode.name}","ref":""").append(quote(ref))
-                .append(""","color":"$colorHex","text":"${Palette.hex(text)}","rank":$rank""")
-            if (ref.isNotBlank()) lines.append(""","pill":"${pillId(key)}"""")
+            acc.parts.forEachIndexed { pi, pts ->
+                if (pi > 0) lines.append(',')
+                lines.append('[')
+                var k = 0
+                while (k < pts.size) {
+                    if (k > 0) lines.append(',')
+                    lines.append('[').appendCoord(pts[k + 1]).append(',').appendCoord(pts[k]).append(']')
+                    k += 2
+                }
+                lines.append(']')
+            }
+            lines.append("""]},"properties":{"key":""").append(quote(key))
+                .append(""","route":"${r.osmRoute}","mode":"${r.mode.name}","ref":""").append(quote(r.ref))
+                .append(""","color":"$colorHex","text":"${Palette.hex(r.text)}","rank":${r.rank}""")
+            if (r.ref.isNotBlank()) lines.append(""","pill":"${pillId(key)}"""")
             lines.append("}}")
 
-            if (ref.isNotBlank()) {
-                val b = Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble())
-                val stopNames = orderedStops(route, raw)
-                val prev = loaded[key]
-                loaded[key] = if (prev == null) {
-                    LoadedLine(LineInfo(key, ref, route.name, osmRoute, mode, color, text), b, stopNames)
-                } else {
-                    val p = prev.bounds
-                    prev.copy(
-                        bounds = Bounds(minOf(p.south, b.south), minOf(p.west, b.west), maxOf(p.north, b.north), maxOf(p.east, b.east)),
-                        // Variants of one line: keep the longest stop sequence.
-                        stops = if (stopNames.size > prev.stops.size) stopNames else prev.stops,
-                    )
+            for (st in acc.stops) {
+                val id = st.id.ifBlank { "${st.lat},${st.lon}" }
+                val prev = stopFeatures[id]
+                if (prev == null || prev.first < r.rank) {
+                    stopFeatures[id] = r.rank to buildString {
+                        append("""{"type":"Feature","geometry":{"type":"Point","coordinates":[""")
+                        appendCoord(st.lon.toFloat()).append(',').appendCoord(st.lat.toFloat())
+                        append("""]},"properties":{"color":"$colorHex","rank":${r.rank},"key":""").append(quote(key))
+                        append(""","mode":"${r.mode.name}","name":""").append(quote(st.name)).append("}}")
+                    }
                 }
+            }
+            if (r.ref.isNotBlank()) {
+                loaded += LoadedLine(
+                    LineInfo(key, r.ref, r.name, r.osmRoute, r.mode, r.color, r.text),
+                    Bounds(acc.s, acc.w, acc.n, acc.e),
+                    acc.stops,
+                )
             }
         }
         lines.append("]}")
-
-        val stops = StringBuilder(1 shl 12).append("""{"type":"FeatureCollection","features":[""")
-        var firstStop = true
-        for (idx in 0 until raw.stopCount) {
-            val info = stopInfo[idx] ?: continue
-            val lat = raw.stopCoords[idx * 2]; val lon = raw.stopCoords[idx * 2 + 1]
-            if (lat.isNaN() || lon.isNaN()) continue
-            if (!firstStop) stops.append(',')
-            firstStop = false
-            stops.append("""{"type":"Feature","geometry":{"type":"Point","coordinates":[""")
-                .appendCoord(lon).append(',').appendCoord(lat)
-                .append("]},\"properties\":{").append(info)
-            raw.stopNames.getOrNull(idx)?.let { stops.append(",\"name\":").append(quote(it)) }
-            stops.append("}}")
-        }
+        val stops = StringBuilder("""{"type":"FeatureCollection","features":[""")
+        stopFeatures.values.forEachIndexed { i, (_, json) -> if (i > 0) stops.append(','); stops.append(json) }
         stops.append("]}")
-
-        return TransitData(
-            lines = lines.toString(),
-            stops = stops.toString(),
-            routes = loaded.values.toList(),
-            area = area,
-            zoom = zoom,
-            zoomFiltered = raw.zoomFiltered || raw.routes.size > MAX_ROUTES,
-        )
-    }
-
-    /** Stop names in travel order, from the route's consecutive segments. */
-    private fun orderedStops(route: RawRoute, raw: Raw): List<String> {
-        val out = ArrayList<String>()
-        var i = 0
-        while (i + 2 < route.segments.size) {
-            val from = route.segments[i]; val to = route.segments[i + 1]
-            if (out.isEmpty()) raw.stopNames.getOrNull(from)?.let { out += it }
-            raw.stopNames.getOrNull(to)?.let { if (out.lastOrNull() != it) out += it }
-            i += 3
-        }
-        return out
+        return TransitData(lines.toString(), stops.toString(), loaded, zoomFiltered)
     }
 
     /** Map image name for a line's number badge. */
@@ -368,6 +386,12 @@ object TransitRoutes {
             .map { it.info }
             .sortedWith(compareBy<LineInfo> { it.mode?.ordinal ?: 99 }.thenComparator { a, b -> Palette.naturalCompare(a.ref, b.ref) })
             .toList()
+
+    private fun metres(lat1: Float, lon1: Float, lat2: Float, lon2: Float): Double {
+        val dLat = Math.toRadians((lat2 - lat1).toDouble())
+        val dLon = Math.toRadians((lon2 - lon1).toDouble()) * kotlin.math.cos(Math.toRadians(lat1.toDouble()))
+        return 6_371_000.0 * kotlin.math.sqrt(dLat * dLat + dLon * dLon)
+    }
 
     // ---------- Helpers ----------
 

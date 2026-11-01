@@ -3,6 +3,9 @@
 package app.wayfinder.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -163,9 +166,14 @@ private fun LinePill(line: LineInfo, onClick: () -> Unit) {
     }
 }
 
-/** One line: big badge, name, and its stops as a timeline in the line's colour. */
+/** One line: badge and name, its next departures, and its stops as a timeline in the line colour. */
 @Composable
-fun LineSheet(line: LoadedLine, onClose: () -> Unit) {
+fun LineSheet(
+    line: LoadedLine,
+    departures: app.wayfinder.ui.WayfinderViewModel.DepartureBoard?,
+    onStop: (app.wayfinder.data.StopRef) -> Unit,
+    onClose: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     val info = line.info
     val lineColor = Color(info.color)
@@ -212,15 +220,23 @@ fun LineSheet(line: LoadedLine, onClose: () -> Unit) {
             }
         }
 
+        if (departures != null) DepartureCard(departures, lineColor)
+
         if (line.stops.isNotEmpty()) {
             Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(vertical = 8.dp)) {
                     val stops = line.stops.take(80)
-                    stops.forEachIndexed { i, name ->
+                    stops.forEachIndexed { i, stop ->
                         val terminal = i == 0 || i == stops.lastIndex
+                        val selected = departures?.stop?.id == stop.id && stop.id.isNotBlank()
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().height(46.dp).padding(horizontal = 18.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .clickable { onStop(stop) }
+                                .background(if (selected) colors.secondaryContainer else Color.Transparent)
+                                .padding(horizontal = 18.dp),
                         ) {
                             Canvas(Modifier.width(24.dp).fillMaxHeight()) {
                                 val x = size.width / 2
@@ -234,13 +250,82 @@ fun LineSheet(line: LoadedLine, onClose: () -> Unit) {
                             }
                             Spacer(Modifier.width(14.dp))
                             Text(
-                                name,
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight(if (terminal) 650 else 450)),
+                                stop.name,
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight(if (terminal || selected) 650 else 450)),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
                             )
+                            if (selected) Icon(Ph.Clock, contentDescription = "Showing departures", tint = colors.onSecondaryContainer, modifier = Modifier.size(18.dp))
                         }
                     }
+                }
+            }
+            Text(
+                "Tap a stop to see its departures",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DepartureCard(board: app.wayfinder.ui.WayfinderViewModel.DepartureBoard, lineColor: Color) {
+    val colors = MaterialTheme.colorScheme
+    Surface(shape = RoundedCornerShape(24.dp), color = colors.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Next departures", style = MaterialTheme.typography.titleMedium, color = colors.onSecondaryContainer)
+                    Text(board.stop.name, style = MaterialTheme.typography.bodyMedium, color = colors.onSecondaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (board.loading) LoadingIndicator(Modifier.size(36.dp))
+            }
+            board.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = colors.onSecondaryContainer) }
+            val now = System.currentTimeMillis()
+            board.items.forEach { d ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).clip(RoundedCornerShape(5.dp)).background(lineColor))
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        formatTime(d.timeMs),
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight(700),
+                            textDecoration = if (d.cancelled) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                        ),
+                        color = colors.onSecondaryContainer,
+                    )
+                    val late = d.scheduledMs?.let { (d.timeMs - it) / 60_000 } ?: 0
+                    if (late >= 1 && !d.cancelled) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            formatTime(d.scheduledMs),
+                            style = MaterialTheme.typography.bodySmall.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough),
+                            color = colors.onSecondaryContainer.copy(alpha = 0.7f),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        d.headsign.ifBlank { "—" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSecondaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        when {
+                            d.cancelled -> "Cancelled"
+                            else -> {
+                                val mins = ((d.timeMs - now) / 60_000).coerceAtLeast(0)
+                                (if (mins == 0L) "Now" else "in $mins min") + if (d.realTime) " · live" else ""
+                            }
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (d.cancelled) colors.error else colors.onSecondaryContainer,
+                    )
                 }
             }
         }

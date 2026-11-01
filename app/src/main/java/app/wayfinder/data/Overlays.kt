@@ -89,6 +89,8 @@ object Tiles {
     private fun xToLon(x: Int, z: Int) = x.toDouble() / (1 shl z) * 360.0 - 180.0
     private fun yToLat(y: Int, z: Int) = Math.toDegrees(atan(sinh(PI * (1 - 2.0 * y / (1 shl z)))))
 
+    fun bounds(z: Int, x: Int, y: Int): Bounds = Bounds(yToLat(y + 1, z), xToLon(x, z), yToLat(y, z), xToLon(x + 1, z))
+
     fun bounds(t: TileId): Bounds {
         val z = t.tier.tileZoom
         return Bounds(yToLat(t.y + 1, z), xToLon(t.x, z), yToLat(t.y, z), xToLon(t.x + 1, z))

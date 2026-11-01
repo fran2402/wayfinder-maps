@@ -112,7 +112,7 @@ private fun ToolbarToggle(
         modifier = modifier.height(48.dp),
     ) {
         Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-            if (loading) LoadingIndicator(Modifier.size(24.dp)) else Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
+            if (loading) LoadingIndicator(Modifier.size(24.dp), color = androidx.compose.material3.LocalContentColor.current) else Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.labelLarge)

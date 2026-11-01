@@ -265,7 +265,14 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                         onToggleMode = vm::toggleMode,
                         onLine = vm::highlight,
                     )
-                    SheetMode.Line -> picked?.let { LineSheet(it, onClose = { vm.highlight(it.info.key) }) }
+                    SheetMode.Line -> picked?.let {
+                        LineSheet(
+                            line = it,
+                            departures = vm.departures?.takeIf { d -> d.lineKey == it.info.key },
+                            onStop = vm::showDepartures,
+                            onClose = { vm.highlight(it.info.key) },
+                        )
+                    }
                     SheetMode.None -> Spacer(Modifier.height(1.dp))
                 }
             }
@@ -292,8 +299,12 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
                                 humanizeCategory(f.subclass, f.poiClass),
                                 f.poiClass,
                             )
-                        } else if (vm.tappedPlace != null) {
-                            vm.closePlace()
+                        } else {
+                            val line = if (vm.transitVisible) controller.lineAt(pos) else null
+                            when {
+                                line != null -> vm.openLine(line)
+                                vm.tappedPlace != null -> vm.closePlace()
+                            }
                         }
                     },
                     onViewport = vm::onViewport,
