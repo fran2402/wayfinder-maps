@@ -52,6 +52,8 @@ class MapController(private val context: Context) {
     private var route: RouteDrawing? = null
     private var transitLines: String = Overlays.EMPTY
     private var transitStops: String = Overlays.EMPTY
+    private var transitPills: List<app.wayfinder.data.LineInfo> = emptyList()
+    private val pillRenderer = LinePills(context)
     private var bikeLines: String = Overlays.EMPTY
     private var networkVisible = false
     private var bikeVisible = false
@@ -162,10 +164,12 @@ class MapController(private val context: Context) {
 
     // ---------- Overlays ----------
 
-    fun setTransit(lines: String, stops: String) {
+    fun setTransit(lines: String, stops: String, pills: List<app.wayfinder.data.LineInfo>) {
         transitLines = lines
         transitStops = stops
+        transitPills = pills
         val s = style ?: return
+        addPills(s)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(lines)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(stops)
     }
@@ -175,8 +179,14 @@ class MapController(private val context: Context) {
         style?.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(lines)
     }
 
+    private fun addPills(s: Style) {
+        if (transitPills.isEmpty()) return
+        runCatching { s.addImages(pillRenderer.imagesFor(transitPills)) }
+    }
+
     private fun drawOverlays() {
         val s = style ?: return
+        addPills(s)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK)?.setGeoJson(transitLines)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_NETWORK_STOPS)?.setGeoJson(transitStops)
         s.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(bikeLines)

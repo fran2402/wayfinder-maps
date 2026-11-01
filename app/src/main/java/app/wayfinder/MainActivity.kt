@@ -20,6 +20,21 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
+import android.content.Intent
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import app.wayfinder.data.LatLon
@@ -50,9 +65,45 @@ class MainActivity : ComponentActivity() {
 
                 LocationUpdates(enabled = vm.hasLocationPermission, onLocation = vm::onLocation)
                 WayfinderScreen(vm = vm, requestLocationPermission = { launcher.launch(permissions) })
+                CrashDialog()
             }
         }
     }
+}
+
+/** Shows the previous crash, if the app crashed last time, with copy and share actions. */
+@Composable
+private fun CrashDialog() {
+    val context = LocalContext.current
+    var report by remember { mutableStateOf(CrashReporter.takeLastCrash(context)) }
+    val text = report ?: return
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = { report = null },
+        title = { Text("Wayfinder crashed last time") },
+        text = {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "Wayfinder crash report")
+                    .putExtra(Intent.EXTRA_TEXT, text)
+                context.startActivity(Intent.createChooser(send, "Share crash report"))
+                report = null
+            }) { Text("Share") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(text))
+                report = null
+            }) { Text("Copy") }
+        },
+    )
 }
 
 /** Streams the device position from the platform location providers while [enabled]. */

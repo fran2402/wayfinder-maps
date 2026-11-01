@@ -408,14 +408,32 @@ object MapStyle {
                 "circle-stroke-color" to get("color"),
                 "circle-stroke-width" to zoomLinear(12 to 1.2, 16 to 2.2),
             )))
-        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 11.5, visibility = netVis,
-            filter = arr("!=", get("ref"), ""),
-            layout = linePillLayout(),
-            paint = linePillPaint()))
-        add(layer("bike-labels", "symbol", source = SRC_BIKE, minzoom = 11.0, visibility = bikeVis,
-            filter = arr("!=", get("ref"), ""),
-            layout = linePillLayout(),
-            paint = linePillPaint()))
+        add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 11.0, visibility = netVis,
+            filter = arr("has", "pill"),
+            layout = obj(
+                "symbol-placement" to "line",
+                "symbol-spacing" to 320,
+                "symbol-sort-key" to arr("-", 10, get("rank")),
+                "icon-image" to get("pill"),
+                "icon-rotation-alignment" to "viewport",
+                "icon-pitch-alignment" to "viewport",
+                "icon-padding" to 3,
+            )))
+        add(layer("bike-labels", "symbol", source = SRC_BIKE, minzoom = 12.0, visibility = bikeVis,
+            filter = arr("all", arr("!=", get("ref"), ""), arr("<=", arr("length", get("ref")), 12)),
+            layout = obj(
+                "symbol-placement" to "line",
+                "symbol-spacing" to 360,
+                "text-field" to get("ref"),
+                "text-font" to fonts(BOLD),
+                "text-size" to 11,
+                "text-rotation-alignment" to "viewport",
+            ),
+            paint = obj(
+                "text-color" to "#FFFFFF",
+                "text-halo-color" to get("color"),
+                "text-halo-width" to 2.5,
+            )))
 
         // Stations: always visible from mid zoom, emphasised when the network is on.
         add(layer("station", "symbol", "poi", minzoom = 12.0,
@@ -693,28 +711,6 @@ object MapStyle {
         "bus_station", "station-bus",
         "ferry_terminal", "station-ferry",
         arr("match", get("class"), "bus", "station-bus", "ferry_terminal", "station-ferry", "station-train"))
-
-    /** Line-number badges drawn along each line, in the line's own colour. */
-    private fun linePillLayout() = obj(
-        "symbol-placement" to "line",
-        "symbol-spacing" to 260,
-        "symbol-sort-key" to arr("-", 10, get("rank")),
-        "text-field" to get("ref"),
-        "text-font" to fonts(BOLD),
-        "text-size" to 11.5,
-        "text-rotation-alignment" to "viewport",
-        "text-pitch-alignment" to "viewport",
-        "icon-image" to "line-pill",
-        "icon-text-fit" to "both",
-        "icon-text-fit-padding" to arr("literal", arr(2, 6, 2, 6)),
-        "icon-rotation-alignment" to "viewport",
-        "icon-pitch-alignment" to "viewport",
-    )
-
-    private fun linePillPaint() = obj(
-        "icon-color" to get("color"),
-        "text-color" to get("text"),
-    )
 
     // ---------- JSON helpers ----------
 

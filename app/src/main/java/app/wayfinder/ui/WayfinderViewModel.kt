@@ -88,6 +88,9 @@ class WayfinderViewModel : ViewModel() {
         private set
     var transitStops by mutableStateOf(Overlays.EMPTY)
         private set
+    /** Every loaded line with a number, for the badges drawn on the map. */
+    var transitPills by mutableStateOf<List<LineInfo>>(emptyList())
+        private set
     var bikeLines by mutableStateOf(Overlays.EMPTY)
         private set
     /** Lines in view, for the line-number pills. */
@@ -343,6 +346,7 @@ class WayfinderViewModel : ViewModel() {
             try {
                 val data = TransitRoutes.load(view.expanded(0.25), zoom)
                 transitData = data
+                transitPills = data.routes.map { it.info }
                 transitLines = data.lines
                 transitStops = data.stops
                 overlayError = null

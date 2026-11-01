@@ -116,7 +116,9 @@ fun WayfinderScreen(vm: WayfinderViewModel, requestLocationPermission: () -> Uni
     }
     LaunchedEffect(vm.showTransit, mapReady) { controller.setNetworkVisible(vm.showTransit) }
     LaunchedEffect(vm.showBike, mapReady) { controller.setBikeVisible(vm.showBike) }
-    LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) { controller.setTransit(vm.transitLines, vm.transitStops) }
+    LaunchedEffect(vm.transitLines, vm.transitStops, mapReady) {
+        controller.setTransit(vm.transitLines, vm.transitStops, vm.transitPills)
+    }
     LaunchedEffect(vm.bikeLines, mapReady) { controller.setBike(vm.bikeLines) }
     LaunchedEffect(vm.transitModes, mapReady) { controller.setTransitModes(vm.transitModes) }
     LaunchedEffect(vm.highlightedLine, vm.transitLines, mapReady) { controller.highlightLine(vm.highlightedLine) }

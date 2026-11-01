@@ -29,7 +29,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     androidResources {
         // Glyph files are already compact protobufs; keep them uncompressed for fast reads.

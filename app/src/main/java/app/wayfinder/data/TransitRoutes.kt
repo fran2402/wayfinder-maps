@@ -117,7 +117,8 @@ object TransitRoutes {
                 if (color == null) color = parseHex(tr.optString("color"))
                 if (text == null) text = parseHex(tr.optString("textColor"))
             }
-            if (ref.isBlank()) ref = name.take(18)
+            // Only real line numbers become badges; long descriptive names stay off the map.
+            if (ref.length > 10) ref = ""
             val lineColor = color ?: mode.colorArgb
             val lineText = text?.takeIf { it != lineColor }
                 ?: if (Palette.luminance(lineColor) > 0.6) 0xFF1B1B1F.toInt() else 0xFFFFFFFF.toInt()
@@ -158,6 +159,7 @@ object TransitRoutes {
                             .put("key", key).put("route", route).put("mode", mode.name)
                             .put("ref", ref).put("color", Palette.hex(lineColor))
                             .put("text", Palette.hex(lineText)).put("rank", rank)
+                            .apply { if (ref.isNotBlank()) put("pill", pillId(key)) }
                     )
             )
             if (ref.isNotBlank() && seenKeys.add(key)) {
@@ -193,6 +195,9 @@ object TransitRoutes {
             zoomFiltered = json.optBoolean("zoomFiltered", false),
         )
     }
+
+    /** Map image name for a line's number badge. */
+    fun pillId(key: String) = "pill-" + Integer.toHexString(key.hashCode())
 
     /** Lines passing through [view], grouped by mode then sorted by number. */
     fun legend(routes: List<LoadedLine>, modes: Set<TransitMode>, view: Bounds): List<LineInfo> =
