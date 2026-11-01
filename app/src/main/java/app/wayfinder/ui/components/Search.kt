@@ -55,38 +55,39 @@ import app.wayfinder.ui.SearchTarget
 /** The resting "Where to?" pill. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun SearchPill(onClick: () -> Unit, onLayers: () -> Unit, layersOn: Boolean, modifier: Modifier = Modifier) {
+fun SearchPill(onClick: () -> Unit, settingsOn: Boolean, onSettings: () -> Unit, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
         shape = CircleShape,
         color = colors.surfaceContainerHigh,
         shadowElevation = 6.dp,
-        modifier = modifier.fillMaxWidth().height(56.dp),
+        modifier = modifier.fillMaxWidth().height(64.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 20.dp, end = 6.dp),
+            modifier = Modifier.padding(start = 22.dp, end = 10.dp),
         ) {
-            Icon(Ph.MagnifyingGlass, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.width(14.dp))
+            Icon(Ph.MagnifyingGlass, contentDescription = null, tint = colors.onSurfaceVariant, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(16.dp))
             Text(
                 "Where to?",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight(500)),
                 color = colors.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
+            // Map settings live in the search bar's corner.
             androidx.compose.material3.FilledIconToggleButton(
-                checked = layersOn,
-                onCheckedChange = { onLayers() },
+                checked = settingsOn,
+                onCheckedChange = { onSettings() },
                 shapes = androidx.compose.material3.IconButtonDefaults.toggleableShapes(),
                 colors = androidx.compose.material3.IconButtonDefaults.filledIconToggleButtonColors(
                     containerColor = colors.secondaryContainer,
                     contentColor = colors.onSecondaryContainer,
                 ),
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(46.dp),
             ) {
-                Icon(Ph.Stack, contentDescription = "Map layers", modifier = Modifier.size(22.dp))
+                Icon(Ph.SlidersHorizontal, contentDescription = "Map settings", modifier = Modifier.size(22.dp))
             }
         }
     }

@@ -358,7 +358,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     /** [offline] tiles come from downloaded data (a fixed level), others from the network. */
     private data class TKey(val z: Int, val x: Int, val y: Int, val offline: Boolean = false)
     private val tileCache = object : LinkedHashMap<TKey, TileData>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > 220
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TKey, TileData>?) = size > 90
     }
     private val tileFailedAt = HashMap<TKey, Long>()
     private var neededTiles: List<TKey> = emptyList()
@@ -879,7 +879,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0
         val keys = ArrayList<TKey>()
         for (x in x0..x1) for (y in y0..y1) if (offlineStore.has(level, x, y)) keys += TKey(level.z, x, y, offline = true)
-        neededTiles = keys.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(220)
+        neededTiles = keys.sortedBy { (it.x - cx) * (it.x - cx) + (it.y - cy) * (it.y - cy) }.take(80)
 
         val ux0 = Tiles.lonToX(area.west, 8); val ux1 = Tiles.lonToX(area.east, 8)
         val uy0 = Tiles.latToY(area.north, 8); val uy1 = Tiles.latToY(area.south, 8)

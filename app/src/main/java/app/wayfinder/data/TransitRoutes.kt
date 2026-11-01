@@ -63,6 +63,9 @@ data class TransitData(
 object TransitRoutes {
     private const val URL = "https://api.transitous.org/api/experimental/map/routes"
 
+    /** Coordinates sent to the map in one update, at most (keeps memory in check). */
+    private const val MAX_POINTS = 260_000
+
     /** Upper bound on routes kept per tile. */
     private const val MAX_ROUTES = 800
 
@@ -564,6 +567,23 @@ object TransitRoutes {
             }
         }
 
+        // Keep the map's data bounded (it once ran out of memory on zoomed-out views): the most
+        // important and largest lines go first, until about MAX_POINTS coordinates are used.
+        run {
+            var budget = MAX_POINTS
+            val keep = byKey.entries.sortedWith(
+                compareByDescending<Map.Entry<String, Acc>> { it.value.first.rank }
+                    .thenByDescending { maxOf(it.value.n - it.value.s, it.value.e - it.value.w) }
+            ).takeWhile { e ->
+                budget -= e.value.parts.sumOf { it.size / 2 }
+                budget >= 0
+            }.map { it.key }.toHashSet()
+            if (keep.size < byKey.size) {
+                zoomFiltered = true
+                byKey.keys.retainAll(keep)
+            }
+        }
+
         // Lines sharing a street are drawn side by side: each run of a shape gets a slot offset.
         val runs: Map<String, Map<Float, List<FloatArray>>>? =
             if (spread && byKey.values.sumOf { a -> a.parts.sumOf { it.size } } < 1_500_000)
@@ -646,6 +666,10 @@ object TransitRoutes {
 
     // ---------- Side-by-side lines ----------
 
+    /** At most this many lines are spread across one street; the rest share the outer slots. */
+    private const val MAX_SLOTS = 5
+    private const val MIN_RUN_M = 120.0
+
     /**
      * For every line, splits its shapes into runs that each carry a sideways slot: where n lines
      * follow the same street in the same direction band, they get slots -(n-1)/2 … (n-1)/2 in
@@ -701,34 +725,46 @@ object TransitRoutes {
             }
         }
 
-        // Pass 2: each segment takes its slot at its midpoint; equal slots join into runs.
+        // Pass 2: each segment takes its slot at its midpoint. Slots are then smoothed (a short
+        // stretch with a different slot is merged into its neighbours) so lines don't break into
+        // little jogs; equal slots join into runs that share their end points, so they connect.
         val out = HashMap<String, Map<Float, List<FloatArray>>>(lines.size * 2)
         for ((k, _, parts) in lines) {
             val g = gi[k] ?: continue
             val byOff = HashMap<Float, MutableList<FloatArray>>()
             for (pts in parts) {
-                var runStart = 0
-                var runOff = Float.NaN
-                var i = 0
-                while (i + 3 < pts.size) {
+                val segs = pts.size / 2 - 1
+                if (segs < 1) continue
+                val offs = FloatArray(segs)
+                val lens = DoubleArray(segs)
+                for (sIdx in 0 until segs) {
+                    val i = sIdx * 2
                     val la0 = pts[i]; val lo0 = pts[i + 1]; val la1 = pts[i + 2]; val lo1 = pts[i + 3]
                     val b = angleOf(la0, lo0, la1, lo1).toInt() % buckets
                     val set = grid[keyOf((la0 + la1) / 2.0, (lo0 + lo1) / 2.0, b)]
                     var n = 0; var slot = 0
                     if (set != null) for (x in set) { if (x == -1) break; n++; if (x < g) slot++ }
+                    n = minOf(n, MAX_SLOTS); slot = minOf(slot, n - 1).coerceAtLeast(0)
                     var off = if (n <= 1) 0f else slot - (n - 1) / 2f
-                    val reversed = lo1 < lo0 || (lo1 == lo0 && la1 < la0)
-                    if (reversed) off = -off
-                    if (runOff.isNaN()) runOff = off
-                    if (off != runOff) {
-                        byOff.getOrPut(runOff) { ArrayList() } += pts.copyOfRange(runStart, i + 2)
-                        runStart = i
-                        runOff = off
-                    }
-                    i += 2
+                    if (lo1 < lo0 || (lo1 == lo0 && la1 < la0)) off = -off
+                    offs[sIdx] = off
+                    lens[sIdx] = metres(la0, lo0, la1, lo1)
                 }
-                if (runOff.isNaN()) runOff = 0f
-                byOff.getOrPut(runOff) { ArrayList() } += if (runStart == 0) pts else pts.copyOfRange(runStart, pts.size)
+                // Absorb short stretches (under ~120 m) into the slot before them.
+                var r = 0
+                while (r < segs) {
+                    var e = r; var len = 0.0
+                    while (e < segs && offs[e] == offs[r]) { len += lens[e]; e++ }
+                    if (len < MIN_RUN_M && r > 0) for (q in r until e) offs[q] = offs[r - 1]
+                    r = e
+                }
+                var start = 0
+                for (sIdx in 1..segs) {
+                    if (sIdx == segs || offs[sIdx] != offs[start]) {
+                        byOff.getOrPut(offs[start]) { ArrayList() } += pts.copyOfRange(start * 2, sIdx * 2 + 2)
+                        start = sIdx
+                    }
+                }
             }
             out[k] = byOff
         }
