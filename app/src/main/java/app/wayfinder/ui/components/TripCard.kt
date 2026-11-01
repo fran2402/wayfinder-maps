@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package app.wayfinder.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
