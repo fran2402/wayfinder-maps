@@ -127,6 +127,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             suspend fun get(level: OfflineTransit.Level, x: Int, y: Int): Boolean = try {
                 val data = offlineStore.fetch(level, x, y) { problem = it; publish() }
                 offlineStore.write(level, x, y, data)
+                problem = null
                 true
             } catch (e: CancellationException) {
                 throw e

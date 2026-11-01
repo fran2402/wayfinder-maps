@@ -90,6 +90,9 @@ class OfflineTransit(context: Context) {
         )
 
         private const val VERSION = 1
+
+        /** A square may be quartered this many times over (4 levels = 256 pieces). */
+        private const val MAX_SPLITS = 4
     }
 
     // ---------- Tiles ----------
@@ -134,37 +137,37 @@ class OfflineTransit(context: Context) {
      * joins the parts. [onProblem] gets a short reason each time something goes wrong.
      */
     suspend fun fetch(level: Level, x: Int, y: Int, onProblem: (String) -> Unit): TileData =
-        fetchArea(Tiles.bounds(level.z, x, y), level, 0, onProblem)
+        fetchArea(Tiles.bounds(level.z, x, y), level, level.serverZoom, 0, onProblem)
 
-    private suspend fun fetchArea(area: Bounds, level: Level, depth: Int, onProblem: (String) -> Unit): TileData {
+    private suspend fun fetchArea(area: Bounds, level: Level, zoom: Int, depth: Int, onProblem: (String) -> Unit): TileData {
         var waits = 0
         var tries = 0
         while (true) {
             try {
-                return TransitRoutes.loadTile(area, level.serverZoom, level.includeBus)
+                return TransitRoutes.loadTile(area, zoom, level.includeBus)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 onProblem(describe(e))
                 val busy = e is HttpException && (e.code == 429 || e.code == 503)
                 val offline = e is java.net.UnknownHostException || e is java.net.ConnectException
+                // 422 is Transitous saying the area holds more routes than one answer may carry.
+                val tooDense = e is HttpException && e.code == 422
+                val timedOut = e is java.io.InterruptedIOException
                 if ((busy || offline) && waits < 8) {
                     waits++
                     val hint = (e as? HttpException)?.retryAfterS?.coerceIn(1, 300)?.times(1000)
                     kotlinx.coroutines.delay(hint ?: (10_000L * waits).coerceAtMost(60_000L))
                     continue
                 }
-                if (depth < 2 && !busy && !offline) {
-                    val midLat = (area.south + area.north) / 2
-                    val midLon = (area.west + area.east) / 2
-                    val quarters = listOf(
-                        Bounds(midLat, area.west, area.north, midLon), Bounds(midLat, midLon, area.north, area.east),
-                        Bounds(area.south, area.west, midLat, midLon), Bounds(area.south, midLon, midLat, area.east),
-                    )
-                    val parts = quarters.map { q ->
-                        fetchArea(q, level, depth + 1, onProblem).also { kotlinx.coroutines.delay(150) }
-                    }
-                    return TransitRoutes.combine(parts)
+                if ((tooDense || timedOut || tries > 0) && depth < MAX_SPLITS) {
+                    return TransitRoutes.combine(quarters(area).map { q ->
+                        fetchArea(q, level, zoom, depth + 1, onProblem).also { kotlinx.coroutines.delay(150) }
+                    })
+                }
+                if (tooDense && zoom > 6) {
+                    // Still too dense when small: ask for less detail (the server then leaves out minor routes).
+                    return fetchArea(area, level, zoom - 1, depth, onProblem)
                 }
                 tries++
                 if (tries >= 3) throw e
@@ -173,10 +176,20 @@ class OfflineTransit(context: Context) {
         }
     }
 
+    private fun quarters(area: Bounds): List<Bounds> {
+        val midLat = (area.south + area.north) / 2
+        val midLon = (area.west + area.east) / 2
+        return listOf(
+            Bounds(midLat, area.west, area.north, midLon), Bounds(midLat, midLon, area.north, area.east),
+            Bounds(area.south, area.west, midLat, midLon), Bounds(area.south, midLon, midLat, area.east),
+        )
+    }
+
     private fun describe(e: Exception): String = when {
         e is HttpException && (e.code == 429 || e.code == 503) -> "server busy, waiting"
+        e is HttpException && e.code == 422 -> "area too dense, splitting it up"
         e is HttpException -> "server error ${e.code}"
-        e is java.net.SocketTimeoutException || e is java.io.InterruptedIOException -> "timed out, splitting"
+        e is java.io.InterruptedIOException -> "timed out, splitting it up"
         e is java.net.UnknownHostException || e is java.net.ConnectException -> "no connection, waiting"
         else -> e.message?.take(60) ?: e.javaClass.simpleName
     }
