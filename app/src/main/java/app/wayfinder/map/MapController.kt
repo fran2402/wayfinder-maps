@@ -49,6 +49,8 @@ data class RouteDrawing(
  * Thin imperative wrapper around [MapLibreMap]. It remembers the last data it was given so
  * everything is re-applied after a style reload (e.g. switching between light and dark).
  */
+private const val PILLS_PER_FRAME = 40
+
 class MapController(private val context: Context) {
     var map: MapLibreMap? = null
         private set
@@ -294,11 +296,19 @@ class MapController(private val context: Context) {
         style?.getSourceAs<GeoJsonSource>(MapStyle.SRC_BIKE)?.setGeoJson(lines)
     }
 
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pillsQueued = false
+
+    /** Adds missing line badges a few dozen per frame, so drawing them never stalls the map. */
     private fun addPills(s: Style) {
-        val missing = transitPills.filter { TransitRoutes.pillId(it.key) !in pillsInStyle }.take(400)
+        val missing = transitPills.asSequence().filter { TransitRoutes.pillId(it.key) !in pillsInStyle }.take(PILLS_PER_FRAME + 1).toList()
         if (missing.isEmpty()) return
-        val images = pillRenderer.imagesFor(missing)
+        val images = pillRenderer.imagesFor(missing.take(PILLS_PER_FRAME))
         runCatching { s.addImages(images) }.onSuccess { pillsInStyle += images.keys }
+        if (missing.size > PILLS_PER_FRAME && !pillsQueued) {
+            pillsQueued = true
+            main.postDelayed({ pillsQueued = false; style?.let(::addPills) }, 16)
+        }
     }
 
     private fun drawOverlays() {
