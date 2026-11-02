@@ -189,6 +189,14 @@ class OfflineTransit(context: Context) {
 
     private val bikeGate = Semaphore(2) // Overpass allows few parallel queries per client
 
+    /** Stores bike routes for a square that came from elsewhere (the pack builder's OSM extract). */
+    suspend fun writeBike(x: Int, y: Int, data: TileData) = withContext(Dispatchers.IO) {
+        val tmp = File(dir, "${bikeName(x, y)}.tmp")
+        writeCodec(tmp, data)
+        tmp.renameTo(bikeFile(x, y))
+        present += bikeName(x, y)
+    }
+
     /** Downloads the bike routes of one square, splitting it when Overpass gives up on it. */
     suspend fun downloadBike(x: Int, y: Int, force: Boolean = false, onProblem: (String) -> Unit) {
         if (!force && hasBike(x, y)) return

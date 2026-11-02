@@ -34,8 +34,16 @@ fun main(args: Array<String>) {
             }
             File(args[1]).writeText(JSONArray(ids).toString())
         }
-        "build" -> build(args[1], File(args[2]))
-        "selftest" -> selfTest()
+        "build" -> build(args[1], File(args[2]), args.getOrNull(3)?.let(::File)?.takeIf { it.isFile && it.length() > 0 })
+        "selftest" -> {
+            selfTest()
+            // `selftest <bikes.json>` also reads a bike extract, as a check of the OSM step.
+            args.getOrNull(1)?.let { f ->
+                val t = File(f).reader().use { app.wayfinder.data.BikeRoutes.parse(it) }
+                println("bike extract: ${t.routes.size} routes, ${t.routes.sumOf { it.parts.size }} ways: " +
+                    t.routes.joinToString { "${it.ref} ${app.wayfinder.data.Palette.hex(it.color)}" })
+            }
+        }
         else -> error("usage: list [ids] | build <id> <outDir>")
     }
 }
@@ -46,7 +54,7 @@ private val SHARDS = mapOf("europe" to 8, "north-america" to 6, "australia-nz" t
 /** Largest pack file; GitHub release files must stay under 2 GiB. */
 private const val PART_BYTES = 1_800_000_000L
 
-private fun build(spec: String, out: File) = runBlocking(Dispatchers.Default) {
+private fun build(spec: String, out: File, bikeJson: File?) = runBlocking(Dispatchers.Default) {
     // "europe@3/8" builds the third of eight shards of Europe.
     val id = spec.substringBefore('@')
     val (shard, shards) = spec.substringAfter('@', "1/1").split('/').map { it.toInt() }
@@ -83,8 +91,23 @@ private fun build(spec: String, out: File) = runBlocking(Dispatchers.Default) {
         return false
     }
 
+    // Bike routes from an OpenStreetMap extract (fast, prepared by the workflow) when there is one;
+    // otherwise from Overpass, square by square.
+    val localBikes = if (bikes && bikeJson != null) runCatching {
+        bikeJson.reader().buffered(1 shl 16).use { app.wayfinder.data.BikeRoutes.parse(it) }
+    }.onFailure { System.err.println("  bike extract unreadable: ${it.message}") }.getOrNull() else null
+    if (localBikes != null) {
+        println("$name: ${localBikes.routes.size} bike routes from the OSM extract")
+        for ((x, y) in units) {
+            val area = app.wayfinder.data.Tiles.bounds(8, x, y)
+            val b = app.wayfinder.data.TransitRoutes.TileBuilder()
+            for (r in localBikes.routes) app.wayfinder.data.TransitRoutes.clip(r, area)?.let(b::add)
+            store.writeBike(x, y, b.build())
+        }
+    }
+
     coroutineScope {
-        if (bikes) launch {
+        if (bikes && localBikes == null) launch {
             runAll(units, workers = 2) { u ->
                 if (!retry(3) { store.downloadBike(u.first, u.second) { } }) bikeFailed.incrementAndGet()
             }
