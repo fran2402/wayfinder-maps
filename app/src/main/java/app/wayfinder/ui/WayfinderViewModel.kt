@@ -82,6 +82,15 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     fun setFerries(on: Boolean) { showFerries = on; prefs.edit().putBoolean("ferries", on).apply() }
     fun setTerrain(on: Boolean) { showTerrain = on; prefs.edit().putBoolean("terrain", on).apply() }
     fun setRelief(on: Boolean) { showRelief = on; prefs.edit().putBoolean("relief", on).apply() }
+
+    /** Lines sharing a street pushed apart side by side when zoomed in very close (off by default: it moves them off the road). */
+    var spreadLines by mutableStateOf(prefs.getBoolean("spreadLines", false))
+        private set
+    fun changeSpreadLines(on: Boolean) {
+        spreadLines = on
+        prefs.edit().putBoolean("spreadLines", on).apply()
+        rebuildTransit()
+    }
     /** The layers sheet (it holds what used to be the settings sheet). */
     fun toggleSettings() { settingsOpen = !settingsOpen }
 
@@ -989,7 +998,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             val zoom = lastViewport?.second ?: 12.0
             // Stops and line badges only show close in; leave them out further away.
             val data = withContext(storeThread) { TransitRoutes.merge(
-                    tiles, withStops = zoom >= 11.0, spread = zoom >= SPREAD_ZOOM,
+                    tiles, withStops = zoom >= 11.0, spread = spreadLines && zoom >= SPREAD_ZOOM,
                     // Below street level, lines sharing a track are drawn once.
                     // Not while one line is picked: shared stretches would show as holes in it.
                     overlapZoom = if (zoom < 13.0 && highlightedLine == null) zoom else null,

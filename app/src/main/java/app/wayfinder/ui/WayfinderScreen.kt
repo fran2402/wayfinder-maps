@@ -258,6 +258,8 @@ fun WayfinderScreen(
                         onFerries = vm::setFerries,
                         onTerrain = vm::setTerrain,
                         onRelief = vm::setRelief,
+                        spread = vm.spreadLines,
+                        onSpread = vm::changeSpreadLines,
                         minLineZoom = vm.minLineZoom,
                         onMinLineZoom = vm::changeMinLineZoom,
                         presets = app.wayfinder.data.OfflineTransit.presets,

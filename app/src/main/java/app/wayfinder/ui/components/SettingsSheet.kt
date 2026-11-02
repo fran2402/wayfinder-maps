@@ -67,6 +67,8 @@ fun SettingsSheet(
     onFerries: (Boolean) -> Unit,
     onTerrain: (Boolean) -> Unit,
     onRelief: (Boolean) -> Unit,
+    spread: Boolean = false,
+    onSpread: (Boolean) -> Unit = {},
     minLineZoom: Float,
     onMinLineZoom: (Float) -> Unit,
     presets: List<OfflineTransit.Region>,
@@ -184,6 +186,8 @@ fun SettingsSheet(
                 SettingRow(Ph.Mountains, "Terrain shading", "Hill shading on the map", terrain, onTerrain)
                 HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 72.dp, end = 16.dp))
                 SettingRow(Ph.Path, "Elevation and depth", "Colour land by height and the sea by depth", relief, onRelief)
+                HorizontalDivider(color = colors.outlineVariant, modifier = Modifier.padding(start = 72.dp, end = 16.dp))
+                SettingRow(Ph.Bus, "Lines side by side", "Spread lines sharing a street when zoomed in very close", spread, onSpread)
             }
         }
     }
