@@ -263,6 +263,12 @@ class OfflineTransit(context: Context) {
      */
     @Volatile private var learnedDepth = 0
 
+    /**
+     * Every square starts split into at least 4^this pieces. Small pieces answer quickly on a
+     * phone; the pack builder uses 0 (fewer, bigger requests where the server limits the rate).
+     */
+    var minStartDepth = MIN_START_DEPTH
+
     /** True once a download square's lines are on disk. */
     fun hasLines(x: Int, y: Int) = has(Level.City, x, y)
 
@@ -299,7 +305,7 @@ class OfflineTransit(context: Context) {
         }
         // Start small (about 40 km pieces, or smaller where neighbours needed it): small requests
         // answer quickly and rarely come back "too dense", so no time is lost splitting.
-        val start = learnedDepth.coerceIn(MIN_START_DEPTH, 4)
+        val start = learnedDepth.coerceIn(minStartDepth, 4)
         coroutineScope {
             split(unit, start).map { piece -> async { fetchArea(piece, start, onProblem, sink) } }.awaitAll()
         }
@@ -517,6 +523,19 @@ class OfflineTransit(context: Context) {
     }
 
     // ---------- Packs ----------
+
+    /** Tile files of some download squares and continent tiles (for building one shard of a pack). */
+    fun filesOf(units: Collection<Pair<Int, Int>>, rails: Collection<Pair<Int, Int>>): List<File> {
+        val k = 1 shl (Level.Street.z - Level.City.z)
+        val out = ArrayList<File>()
+        for ((x, y) in rails) if (has(Level.Rail, x, y)) out += file(Level.Rail, x, y)
+        for ((x, y) in units) {
+            if (has(Level.City, x, y)) out += file(Level.City, x, y)
+            if (hasBike(x, y)) out += bikeFile(x, y)
+            for (i in 0 until k) for (j in 0 until k) if (has(Level.Street, x * k + i, y * k + j)) out += file(Level.Street, x * k + i, y * k + j)
+        }
+        return out
+    }
 
     /** Every tile file of a region present on disk (for building packs). */
     fun filesOf(region: Region): List<File> = tilesOf(region).flatMap { (l, x, y) ->

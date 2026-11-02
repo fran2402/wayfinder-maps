@@ -27,7 +27,11 @@ fun main(args: Array<String>) {
             val wanted = args.getOrNull(2)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
             // Small packs first, so cities and countries are ready long before whole continents.
             val ordered = OfflineTransit.cities + OfflineTransit.countries + OfflineTransit.continents
-            val ids = ordered.map { it.id }.filter { wanted.isEmpty() || it in wanted }
+            // Big regions are split into shards, each built on its own machine in parallel.
+            val ids = ordered.filter { wanted.isEmpty() || it.id in wanted }.flatMap { r ->
+                val n = SHARDS[r.id] ?: 1
+                if (n == 1) listOf(r.id) else (1..n).map { "${r.id}@$it/$n" }
+            }
             File(args[1]).writeText(JSONArray(ids).toString())
         }
         "build" -> build(args[1], File(args[2]))
@@ -36,19 +40,32 @@ fun main(args: Array<String>) {
     }
 }
 
+/** How many machines build each big region. */
+private val SHARDS = mapOf("europe" to 8, "north-america" to 6, "australia-nz" to 3, "japan" to 2)
+
 /** Largest pack file; GitHub release files must stay under 2 GiB. */
 private const val PART_BYTES = 1_800_000_000L
 
-private fun build(id: String, out: File) = runBlocking(Dispatchers.Default) {
+private fun build(spec: String, out: File) = runBlocking(Dispatchers.Default) {
+    // "europe@3/8" builds the third of eight shards of Europe.
+    val id = spec.substringBefore('@')
+    val (shard, shards) = spec.substringAfter('@', "1/1").split('/').map { it.toInt() }
     val region = OfflineTransit.presets.first { it.id == id }
     val work = File("work/$id").apply { mkdirs() }
     val store = OfflineTransit(Context(work))
-    val units = store.unitsOf(region)
+    // Fewer, bigger requests: Transitous limits the rate, so requests matter more than their size.
+    store.minStartDepth = 0
+    // Shards follow continent-tile boundaries, so each shard's zoomed-out tiles are complete.
+    val groups = store.unitsOf(region).groupBy { (it.first shr 2) to (it.second shr 2) }.toSortedMap(compareBy({ it.first }, { it.second }))
+    val mine = groups.entries.filterIndexed { i, _ -> i % shards == shard - 1 }
+    val rails = mine.map { it.key }
+    val units = mine.flatMap { it.value }
+    val name = if (shards == 1) id else "$id.s$shard"
     // Bike routes come from Overpass, which allows only slow, few queries: whole continents skip them.
     val bikes = region !in OfflineTransit.continents
     val done = AtomicInteger(); val failed = AtomicInteger(); val bikeFailed = AtomicInteger()
     val started = System.currentTimeMillis()
-    println("$id: ${units.size} squares, bikes=$bikes")
+    println("$name: ${units.size} squares, bikes=$bikes")
 
     suspend fun runAll(list: List<Pair<Int, Int>>, workers: Int, work: suspend (Pair<Int, Int>) -> Unit) {
         val queue = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
@@ -77,14 +94,14 @@ private fun build(id: String, out: File) = runBlocking(Dispatchers.Default) {
             val n = done.incrementAndGet()
             if (n % 25 == 0 || n == units.size) {
                 val mins = (System.currentTimeMillis() - started) / 60_000.0
-                println("$id: $n/${units.size} squares (${failed.get()} failed) after ${"%.1f".format(mins)} min")
+                println("$name: $n/${units.size} squares (${failed.get()} failed) after ${"%.1f".format(mins)} min")
             }
         }
-        store.buildOverview(region)
+        for ((x, y) in rails) store.rebuildRail(x, y)
     }
 
     out.mkdirs()
-    val files = store.filesOf(region)
+    val files = store.filesOf(units, rails)
     val parts = ArrayList<String>()
     var zip: ZipOutputStream? = null
     var written = 0L
@@ -94,12 +111,12 @@ private fun build(id: String, out: File) = runBlocking(Dispatchers.Default) {
         val index = parts.size + 1
         if (index == 2) {
             // A second part: rename the first so the names stay uniform.
-            File(out, "$id.zip").renameTo(File(out, "$id.part1.zip")); parts[0] = "$id.part1.zip"
+            File(out, "$name.zip").renameTo(File(out, "$name.part1.zip")); parts[0] = "$name.part1.zip"
         }
-        val name = if (index == 1) "$id.zip" else "$id.part$index.zip"
-        parts += name
+        val file = if (index == 1) "$name.zip" else "$name.part$index.zip"
+        parts += file
         written = 0
-        return ZipOutputStream(File(out, name).outputStream().buffered(1 shl 16)).also { zip = it }
+        return ZipOutputStream(File(out, file).outputStream().buffered(1 shl 16)).also { zip = it }
     }
     var z = next()
     for (f in files) {
@@ -114,9 +131,10 @@ private fun build(id: String, out: File) = runBlocking(Dispatchers.Default) {
         written += bytes.size; total += bytes.size
     }
     z.close()
-    File(out, "$id.json").writeText(
+    File(out, "$name.json").writeText(
         JSONObject()
-            .put("id", id).put("name", region.name)
+            .put("id", id).put("name", region.name).put("shard", shard).put("shards", shards)
+            .put("run", System.getenv("GITHUB_RUN_ID") ?: "local")
             .put("parts", JSONArray(parts))
             .put("bytes", parts.sumOf { File(out, it).length() })
             .put("files", files.size).put("squares", units.size)
@@ -124,7 +142,7 @@ private fun build(id: String, out: File) = runBlocking(Dispatchers.Default) {
             .put("built", Instant.now().toString())
             .toString(2)
     )
-    println("$id: ${files.size} files, ${total / 1_000_000} MB in ${parts.size} part(s), ${failed.get()} squares failed")
+    println("$name: ${files.size} files, ${total / 1_000_000} MB in ${parts.size} part(s), ${failed.get()} squares failed")
 }
 
 /** Round-trips random tiles through the compact codec (run in CI before building packs). */

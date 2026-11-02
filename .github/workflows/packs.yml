@@ -2,8 +2,8 @@ name: Build offline packs
 
 # Builds one ready-made file per region (lines with every mode, and bike routes for countries
 # and cities) and publishes them on the "packs" release, where the app downloads them.
-# Run it by hand (optionally for a few regions) or let it refresh monthly. Transitous is
-# volunteer-run, so regions build a few at a time rather than all at once.
+# Run it by hand (optionally for a few regions) or let it refresh monthly. Big regions are split
+# into shards built on separate machines; index.json joins them for the app.
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 345
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 12
       matrix:
         region: ${{ fromJson(needs.plan.outputs.regions) }}
     steps:
@@ -70,9 +70,12 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          SPEC: ${{ matrix.region }}
         run: |
-          # Old parts of this region go first, so a pack that shrank leaves nothing stale behind.
-          for old in $(gh release view packs --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -E "^${{ matrix.region }}(\.part[0-9]+)?\.zip$" || true); do
+          # "europe@3/8" publishes as europe.s3.*; replace only this shard's old files.
+          id="${SPEC%@*}"
+          if [ "$SPEC" != "$id" ]; then k="${SPEC#*@}"; name="$id.s${k%/*}"; else name="$id"; fi
+          for old in $(gh release view packs --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -E "^${name}(\.part[0-9]+)?\.zip$" || true); do
             gh release delete-asset packs "$old" --repo "$GITHUB_REPOSITORY" -y
           done
           gh release upload packs out/* --repo "$GITHUB_REPOSITORY" --clobber
@@ -82,12 +85,16 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Write index.json
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir meta && cd meta
-          gh release download packs --repo "$GITHUB_REPOSITORY" -p "*.json" --skip-existing || true
-          rm -f index.json
-          jq -s 'map({(.id): .}) | add // {}' *.json > index.json
-          gh release upload packs index.json --repo "$GITHUB_REPOSITORY" --clobber
+          mkdir meta
+          gh release download packs --repo "$GITHUB_REPOSITORY" -p "*.json" -D meta || true
+          rm -f meta/index.json
+          assets=$(gh release view packs --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          stale=$(echo "$assets" | python3 packer/scripts/index.py meta)
+          gh release upload packs meta/index.json --repo "$GITHUB_REPOSITORY" --clobber
+          # Files left over from an older layout (e.g. before a region was split into shards).
+          for f in $stale; do gh release delete-asset packs "$f" --repo "$GITHUB_REPOSITORY" -y || true; done
