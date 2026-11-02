@@ -45,22 +45,37 @@ class OsmAlign(osm: TileData) {
 
     val size get() = index.values.sumOf { it.size }
 
+    /** Why lines did or didn't match, by mode (for the pack builder's log). */
+    val stats = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private fun count(mode: TransitMode, what: String) {
+        stats.getOrPut("${mode.name} $what") { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+    }
+    val examples = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private fun example(s: String) { if (examples.size < 40) examples += s }
+
     /** [tile] with every matched line moved onto OSM geometry, clipped to [area]. */
     fun align(tile: TileData, area: Bounds): TileData = TileData(tile.routes.map { r -> alignRoute(r, area) ?: r }, tile.zoomFiltered)
 
     private fun alignRoute(r: TileRoute, area: Bounds): TileRoute? {
         val group = groupOf(r.mode) ?: return null
         val ref = norm(r.ref)
-        if (ref.isEmpty()) return null
-        val candidates = index["$group|$ref"] ?: return null
+        if (ref.isEmpty()) { count(r.mode, "no number"); return null }
+        val candidates = index["$group|$ref"]
+        if (candidates == null) { count(r.mode, "no OSM route with that number"); example("none ${r.mode} '${r.ref}' ${r.name}"); return null }
         val samples = sample(r.parts)
         if (samples.isEmpty()) return null
         val near = r.bounds.expanded(0.2)
-        val matched = candidates.filter { it.bounds.intersects(near) && fit(samples, it) >= MIN_FIT }
-        if (matched.isEmpty()) return null
+        val fits = candidates.filter { it.bounds.intersects(near) }.map { it to fit(samples, it) }
+        val matched = fits.filter { it.second >= MIN_FIT }.map { it.first }
+        if (matched.isEmpty()) {
+            count(r.mode, "path too different")
+            example("fit ${r.mode} '${r.ref}': best ${"%.2f".format(fits.maxOfOrNull { it.second } ?: 0.0)} of ${candidates.size} candidates")
+            return null
+        }
         // Together, the matched routes must cover the line (variants and directions add up).
         val cover = samples.count { (la, lo) -> matched.any { m -> nearCell(m.cells, la, lo) } }.toDouble() / samples.size
-        if (cover < MIN_COVER) return null
+        if (cover < MIN_COVER) { count(r.mode, "covers too little"); example("cover ${r.mode} '${r.ref}': ${"%.2f".format(cover)}"); return null }
+        count(r.mode, "aligned")
         val seen = java.util.IdentityHashMap<FloatArray, Boolean>()
         val parts = ArrayList<FloatArray>()
         for (m in matched) for (p in m.parts) if (seen.put(p, true) == null) parts += p

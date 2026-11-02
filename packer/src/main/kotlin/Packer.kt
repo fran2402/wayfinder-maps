@@ -39,6 +39,20 @@ fun main(args: Array<String>) {
             args.getOrNull(3)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
             args.getOrNull(4)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
         )
+        "packtest" -> runBlocking {
+            // Runs the app's own pack download and install for one region into a scratch store.
+            val dir = File(args[2]).apply { mkdirs() }
+            val store = OfflineTransit(Context(dir))
+            val entry = app.wayfinder.data.Packs.index()[args[1]] ?: error("no pack ${args[1]} in index")
+            println("entry: $entry")
+            app.wayfinder.data.Packs.install(entry, store) { d, t -> }
+            val region = OfflineTransit.presets.first { it.id == args[1] }
+            val files = store.filesOf(region)
+            println("installed ${files.size} files; hasLines=${store.unitsOf(region).all { store.hasLines(it.first, it.second) }}")
+            val (x, y) = store.unitsOf(region).first()
+            val t = store.read(OfflineTransit.Level.City, x, y)
+            println("city tile: ${t?.routes?.size} routes; modes ${t?.routes?.groupingBy { it.mode }?.eachCount()}")
+        }
         "selftest" -> {
             selfTest()
             // `selftest <bikes.json>` also reads a bike extract, as a check of the OSM step.
@@ -58,6 +72,8 @@ private val SHARDS = mapOf("europe" to 8, "north-america" to 6, "australia-nz" t
 
 /** Largest pack file; GitHub release files must stay under 2 GiB. */
 private const val PART_BYTES = 1_800_000_000L
+
+private var alignerForStats: app.wayfinder.data.OsmAlign? = null
 
 private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) = runBlocking(Dispatchers.Default) {
     // "europe@3/8" builds the third of eight shards of Europe.
@@ -105,6 +121,7 @@ private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) 
                 val aligner = app.wayfinder.data.OsmAlign(osm)
                 println("$name: ${aligner.size} OSM transit routes to align with")
                 store.align = { t, area -> aligner.align(t, area) }
+                alignerForStats = aligner
             }
     }
 
@@ -182,6 +199,10 @@ private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) 
             .put("built", Instant.now().toString())
             .toString(2)
     )
+    alignerForStats?.let { al ->
+        println("$name: alignment " + al.stats.entries.sortedBy { it.key }.joinToString { "${it.key}: ${it.value.get()}" })
+        al.examples.forEach { println("  $it") }
+    }
     println("$name: ${files.size} files, ${total / 1_000_000} MB in ${parts.size} part(s), ${failed.get()} squares failed")
 }
 
