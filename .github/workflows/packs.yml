@@ -89,12 +89,13 @@ jobs:
           done
           osmium merge osm/*.routes.pbf -o osm/routes.pbf --overwrite
           python3 packer/scripts/osm_routes.py osm/routes.pbf "$PWD/bikes.json" "$PWD/transit.json"
-          osmium merge osm/*.ways.pbf -o osm/ways.pbf --overwrite
-          rm -f osm/*.osm.pbf.ways.pbf
-          osmium export osm/ways.pbf -c packer/osmium-export.json -f geojsonseq -o osm/ways.geojsonseq --overwrite
-          rm -f osm/ways.pbf
-          python3 packer/scripts/bucket_ways.py osm/ways.geojsonseq "$PWD/roads"
-          rm -f osm/ways.geojsonseq
+          # Extracts of neighbouring areas overlap at their borders, and merging them fails on the
+          # shared objects; each is exported on its own instead (a road listed twice does no harm).
+          for w in osm/*.ways.pbf; do
+            osmium export "$w" -c packer/osmium-export.json -f geojsonseq -o "$w.geojsonseq" --overwrite
+            python3 packer/scripts/bucket_ways.py "$w.geojsonseq" "$PWD/roads"
+            rm -f "$w" "$w.geojsonseq"
+          done
       - name: Build ${{ matrix.region }}
         run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out $PWD/bikes.json $PWD/transit.json $PWD/roads"
       - name: Publish
