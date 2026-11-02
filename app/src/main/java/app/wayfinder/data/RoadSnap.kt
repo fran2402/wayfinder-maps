@@ -177,8 +177,17 @@ class RoadNet(lines: Sequence<String>) {
                 if (base == Double.MAX_VALUE) continue
                 val routes = route(p, cur, maxOf(gc * 3, gc + 150.0))
                 for ((ci, c) in cur.withIndex()) {
-                    val (dist, geom) = routes[ci] ?: continue
-                    val s = base + c.cost + abs(dist - gc) / BETA
+                    val r = routes[ci]
+                    val s: Double; val geom: FloatArray
+                    if (r != null) {
+                        s = base + c.cost + abs(r.first - gc) / BETA; geom = r.second
+                    } else {
+                        // No route between them (e.g. parallel tracks joined by a far-off switch):
+                        // allow a short step across, at a price, so the line stays matched.
+                        val hop = metres(p.lat, p.lon, c.lat, c.lon)
+                        if (hop > MAX_HOP_M) continue
+                        s = base + c.cost + HOP_PENALTY + abs(hop - gc) / BETA; geom = floatArrayOf(c.lat, c.lon)
+                    }
                     if (s < sc[ci]) { sc[ci] = s; bk[ci] = pi; lg[ci] = geom }
                 }
             }
@@ -282,7 +291,10 @@ class RoadNet(lines: Sequence<String>) {
         private const val SIGMA = 12.0
         /** How strongly travel distance must agree with the shape's own distance. */
         private const val BETA = 8.0
-        private const val MAX_CANDS = 6
+        private const val MAX_CANDS = 8
+        /** Straight steps between ways with no route between them: how far, and their cost. */
+        private const val MAX_HOP_M = 80.0
+        private const val HOP_PENALTY = 25.0
         /** Longest stretch with no way nearby that is bridged through the network. */
         private const val MAX_GAP_M = 300.0
 
