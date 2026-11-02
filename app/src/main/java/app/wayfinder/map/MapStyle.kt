@@ -714,11 +714,11 @@ object MapStyle {
                 ),
                 // Overlay sources are big: tile them only up to z14 (MapLibre over-zooms beyond),
                 // which makes updates far cheaper.
-                // Lines: tiled to z12 only (over-zoomed beyond) with a coarser tolerance, which
-                // cuts the work on every update several-fold.
-                SRC_NETWORK to geojson(maxzoom = 12, tolerance = 0.9),
+                // Lines are tiled at full detail down to street level, so they stay on the roads
+                // and tracks they were matched to (tiles are cut lazily, only where viewed).
+                SRC_NETWORK to geojson(maxzoom = 16, tolerance = 0.375),
                 SRC_NETWORK_STOPS to geojson(maxzoom = 14),
-                SRC_SELECTED to geojson(maxzoom = 12),
+                SRC_SELECTED to geojson(maxzoom = 16, tolerance = 0.375),
                 SRC_BIKE to geojson(maxzoom = 14),
                 SRC_ROUTE to geojson(),
                 SRC_ROUTE_ALT to geojson(),

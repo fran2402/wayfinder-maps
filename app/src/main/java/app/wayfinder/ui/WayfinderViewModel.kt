@@ -916,7 +916,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         return when (lvl) {
             OfflineTransit.Level.Rail -> {
                 // Far out, only the rail networks (trains, metro, trams) and ferries.
-                val far = next.lod < 7
+                val far = next.lod < 9
                 val kept = if (far) TileData(t.routes.filter {
                     it.mode == TransitMode.Train || it.mode == TransitMode.Metro || it.mode == TransitMode.Tram || it.mode == TransitMode.Ferry
                 }, t.zoomFiltered) else t
@@ -939,8 +939,10 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val cx = (x0 + x1) / 2.0; val cy = (y0 + y1) / 2.0
         // Detail to load saved tiles at: continent views get coarse shapes and long-distance modes only.
         val lod = when (level) {
-            OfflineTransit.Level.Rail -> when { zoom < 4.5 -> 3; zoom < 5.5 -> 4; zoom < 6.5 -> 5; else -> 7 }
-            OfflineTransit.Level.City -> if (zoom < 9.5) 9 else 10
+            OfflineTransit.Level.Rail -> when { zoom < 4.5 -> 5; zoom < 5.5 -> 6; zoom < 6.5 -> 7; else -> 9 }
+            // Simplified for a zoom two levels closer than shown: within a fraction of a pixel,
+            // so lines keep following their roads and tracks.
+            OfflineTransit.Level.City -> if (zoom < 9.5) 11 else 12
             OfflineTransit.Level.Street -> 14
         }
         val keys = ArrayList<TKey>()

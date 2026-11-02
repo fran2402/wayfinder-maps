@@ -64,7 +64,7 @@ object TransitRoutes {
     private const val URL = "https://api.transitous.org/api/experimental/map/routes"
 
     /** Coordinates sent to the map in one update, at most (keeps memory in check). */
-    private const val MAX_POINTS = 260_000
+    private const val MAX_POINTS = 400_000
 
     /** Upper bound on routes kept per tile. */
     private const val MAX_ROUTES = 800
