@@ -495,6 +495,48 @@ object TransitRoutes {
         return out
     }
 
+    /**
+     * The shapes of a line's variants as one set of polylines in which each stretch appears once:
+     * segments are compared by their end points (to about a metre) in either direction, and
+     * the unique ones are stitched back into the longest runs possible.
+     */
+    fun unionParts(parts: List<FloatArray>): List<FloatArray> {
+        if (parts.size <= 1) return parts
+        fun key(lat: Float, lon: Float) = (Math.round(lat * 1e5).toLong() shl 32) xor (Math.round(lon * 1e5).toLong() and 0xFFFFFFFFL)
+        val pos = HashMap<Long, Pair<Float, Float>>()
+        val adj = HashMap<Long, MutableList<Long>>()
+        val segs = HashSet<Pair<Long, Long>>()
+        for (p in parts) {
+            var k = 0
+            while (k + 3 < p.size) {
+                val a = key(p[k], p[k + 1]); val b = key(p[k + 2], p[k + 3])
+                k += 2
+                if (a == b) continue
+                pos.getOrPut(a) { p[k - 2] to p[k - 1] }; pos.getOrPut(b) { p[k] to p[k + 1] }
+                val seg = if (a < b) a to b else b to a
+                if (segs.add(seg)) { adj.getOrPut(a) { ArrayList() } += b; adj.getOrPut(b) { ArrayList() } += a }
+            }
+        }
+        val used = HashSet<Pair<Long, Long>>()
+        val out = ArrayList<FloatArray>()
+        fun walk(start: Long, first: Long) {
+            val pts = ArrayList<Long>(); pts += start
+            var prev = start; var cur = first
+            while (true) {
+                used += if (prev < cur) prev to cur else cur to prev
+                pts += cur
+                val next = adj[cur]?.firstOrNull { nb -> (if (cur < nb) cur to nb else nb to cur) !in used } ?: break
+                if ((adj[cur]?.size ?: 0) != 2) break // a junction: end the run here
+                prev = cur; cur = next
+            }
+            out += FloatArray(pts.size * 2) { i -> pos[pts[i / 2]]!!.let { if (i % 2 == 0) it.first else it.second } }
+        }
+        // Runs start at ends and junctions, then whatever is left (loops).
+        for ((node, nbs) in adj) if (nbs.size != 2) for (nb in nbs) if ((if (node < nb) node to nb else nb to node) !in used) walk(node, nb)
+        for ((node, nbs) in adj) for (nb in nbs) if ((if (node < nb) node to nb else nb to node) !in used) walk(node, nb)
+        return out
+    }
+
     /** [cutLongEdges] for a whole tile (also cleans data stored by older versions). */
     fun clean(t: TileData, toleranceM: Double): TileData = TileData(t.routes.mapNotNull { r ->
         val parts = r.parts.flatMap { cutLongEdges(it, r.mode, toleranceM) }

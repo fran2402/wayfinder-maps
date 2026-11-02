@@ -295,5 +295,11 @@ private fun snapTest(dir: File) {
     val r = app.wayfinder.data.TileRoute("Bus|5|#000", app.wayfinder.data.TransitMode.Bus, "bus", "5", "", 0, 0, 1,
         listOf(bus), intArrayOf(1), emptyList(), app.wayfinder.data.Bounds(45.8, 15.95, 45.81, 15.961))
     val out = app.wayfinder.data.RoadNet.snapTile(app.wayfinder.data.TileData(listOf(r), false), net).routes.single().parts.single()
+    // Already on street A (within a metre or two): kept exactly as given.
+    val good = floatArrayOf(45.80001f, 15.9505f, 45.80001f, 15.9530f, 45.80001f, 15.9590f)
+    val g = app.wayfinder.data.TileRoute("Bus|6|#000", app.wayfinder.data.TransitMode.Bus, "bus", "6", "", 0, 0, 1,
+        listOf(good, good.copyOf()), intArrayOf(1, 2), emptyList(), app.wayfinder.data.Bounds(45.8, 15.95, 45.81, 15.961))
+    val kept = app.wayfinder.data.RoadNet.snapTile(app.wayfinder.data.TileData(listOf(g), false), net).routes.single()
+    println("on-road: ${kept.parts.size} part(s) after merging two identical variants; unchanged = ${kept.parts.single().contentEquals(good)}")
     println("snap: ${out.size / 2} points: " + out.toList().chunked(2).joinToString(" ") { "(%.5f,%.5f)".format(it[0], it[1]) })
 }

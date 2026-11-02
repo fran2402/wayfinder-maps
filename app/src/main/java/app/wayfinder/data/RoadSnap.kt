@@ -95,7 +95,7 @@ class RoadNet(lines: Sequence<String>) {
         true
     }
 
-    private class Cand(val seg: Int, val frac: Double, val lat: Float, val lon: Float, val cost: Double)
+    private class Cand(val seg: Int, val frac: Double, val lat: Float, val lon: Float, val cost: Double, val d: Double)
 
     /**
      * [pts] ([lat, lon, …]) laid onto ways whose kind is in [allowed], by map matching: for each
@@ -103,7 +103,7 @@ class RoadNet(lines: Sequence<String>) {
      * both close to the shape and connected through the network with a travel distance like the
      * shape's own (Viterbi). The result follows the roads from junction to junction.
      */
-    fun snap(pts: FloatArray, allowed: String, radiusM: Double): FloatArray {
+    fun snap(pts: FloatArray, allowed: String, radiusM: Double, hopM: Double = MAX_HOP_M): FloatArray {
         graph
         val dense = densify(pts, 20.0)
         val n = dense.size / 2
@@ -123,7 +123,7 @@ class RoadNet(lines: Sequence<String>) {
                 val sx = (p[k + 3] - p[k + 1]) * c; val sy = (p[k + 2] - p[k]).toDouble()
                 val hl = sqrt(hx * hx + hy * hy); val sl = sqrt(sx * sx + sy * sy)
                 val sin = if (hl > 0 && sl > 0) sqrt(maxOf(0.0, 1 - ((hx * sx + hy * sy) / (hl * sl)).let { it * it })) else 0.0
-                list += Cand(sg, f, pLat, pLon, d * d / (2 * SIGMA * SIGMA) + 3.0 * sin)
+                list += Cand(sg, f, pLat, pLon, d * d / (2 * SIGMA * SIGMA) + 3.0 * sin, d)
             }
             list.sortedBy { it.cost }.take(MAX_CANDS)
         }
@@ -134,6 +134,9 @@ class RoadNet(lines: Sequence<String>) {
         for (q in 1 until n) cum[q] = cum[q - 1] + metres(dense[q * 2 - 2], dense[q * 2 - 1], dense[q * 2], dense[q * 2 + 1])
         val withCands = (0 until n).filter { cands[it].isNotEmpty() }
         if (withCands.size < n / 2) { why.set("no ways nearby"); return pts }
+        // Already following the roads (good source shapes): keep it exactly as it is.
+        val onRoad = (0 until n).count { q -> cands[q].any { it.d <= ON_ROAD_M } }
+        if (onRoad >= n * 0.85) { why.set("already on the road"); return pts }
         val chains = ArrayList<List<Int>>()
         var cur = ArrayList<Int>()
         for (q in withCands) {
@@ -147,7 +150,7 @@ class RoadNet(lines: Sequence<String>) {
         var next = 0 // first point not yet written
         for (chain in chains) {
             for (q in next until chain.first()) out.add(dense[q * 2], dense[q * 2 + 1])
-            val path = if (chain.size >= 2) viterbi(cands, cum, chain) else null
+            val path = if (chain.size >= 2) viterbi(cands, cum, chain, hopM) else null
             if (path == null) for (q in chain.first()..chain.last()) out.add(dense[q * 2], dense[q * 2 + 1])
             else { var k = 0; while (k < path.size) { out.add(path[k], path[k + 1]); k += 2 }; matched += chain.last() - chain.first() + 1 }
             next = chain.last() + 1
@@ -160,7 +163,7 @@ class RoadNet(lines: Sequence<String>) {
     }
 
     /** Best connected candidate sequence for the points [ids] (in order), as geometry; null if none connects. */
-    private fun viterbi(cands: Array<List<Cand>>, cum: DoubleArray, ids: List<Int>): FloatArray? {
+    private fun viterbi(cands: Array<List<Cand>>, cum: DoubleArray, ids: List<Int>, hopM: Double): FloatArray? {
         val len = ids.size
         val score = arrayOfNulls<DoubleArray>(len)
         val back = arrayOfNulls<IntArray>(len)
@@ -185,7 +188,7 @@ class RoadNet(lines: Sequence<String>) {
                         // No route between them (e.g. parallel tracks joined by a far-off switch):
                         // allow a short step across, at a price, so the line stays matched.
                         val hop = metres(p.lat, p.lon, c.lat, c.lon)
-                        if (hop > MAX_HOP_M) continue
+                        if (hop > hopM) continue
                         s = base + c.cost + HOP_PENALTY + abs(hop - gc) / BETA; geom = floatArrayOf(c.lat, c.lon)
                     }
                     if (s < sc[ci]) { sc[ci] = s; bk[ci] = pi; lg[ci] = geom }
@@ -295,6 +298,8 @@ class RoadNet(lines: Sequence<String>) {
         /** Straight steps between ways with no route between them: how far, and their cost. */
         private const val MAX_HOP_M = 80.0
         private const val HOP_PENALTY = 25.0
+        /** Within this of a suitable way counts as already on it. */
+        private const val ON_ROAD_M = 6.0
         /** Longest stretch with no way nearby that is bridged through the network. */
         private const val MAX_GAP_M = 300.0
 
@@ -357,6 +362,9 @@ class RoadNet(lines: Sequence<String>) {
             else -> null
         }
 
+        /** Straight steps allowed between unconnected ways: short on streets (no stubs), longer between station tracks. */
+        private fun hopFor(mode: TransitMode) = if (mode == TransitMode.Train || mode == TransitMode.Metro) 80.0 else 20.0
+
         /** Kilometres of shape snapped, or kept and why, by mode (for the pack builder's log). */
         val stats = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
         private val why = ThreadLocal<String>()
@@ -364,14 +372,16 @@ class RoadNet(lines: Sequence<String>) {
         /** [tile] with every line laid onto the roads and tracks of [net]. */
         fun snapTile(tile: TileData, net: RoadNet): TileData = TileData(tile.routes.map { r ->
             val (kinds, radius) = allowed(r.mode) ?: return@map r
-            val parts = r.parts.map { p ->
+            val snappedParts = r.parts.map { p ->
                 why.set("?")
-                net.snap(p, kinds, radius).also {
+                net.snap(p, kinds, radius, hopFor(r.mode)).also {
                     var m = 0.0; var k = 0
                     while (k + 3 < p.size) { m += metres(p[k], p[k + 1], p[k + 2], p[k + 3]); k += 2 }
                     stats.getOrPut("${r.mode.name} ${why.get()}") { java.util.concurrent.atomic.AtomicLong() }.addAndGet(m.toLong())
                 }
             }
+            // Variants of a line that share a stretch draw it once.
+            val parts = TransitRoutes.unionParts(snappedParts)
             var s = 90f; var n = -90f; var w = 180f; var e = -180f
             for (p in parts) { var k = 0; while (k < p.size) { val la = p[k]; val lo = p[k + 1]; if (la < s) s = la; if (la > n) n = la; if (lo < w) w = lo; if (lo > e) e = lo; k += 2 } }
             TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank, parts,
