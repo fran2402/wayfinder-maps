@@ -107,7 +107,7 @@ class RoadNet(lines: Sequence<String>) {
         graph
         val dense = densify(pts, 20.0)
         val n = dense.size / 2
-        if (n < 2) return pts
+        if (n < 3) { why.set("too short"); return pts }
         val cands = Array(n) { i ->
             val lat = dense[i * 2]; val lon = dense[i * 2 + 1]
             val a = maxOf(0, i - 1); val b = minOf(n - 1, i + 1)
@@ -133,6 +133,7 @@ class RoadNet(lines: Sequence<String>) {
         val cum = DoubleArray(n)
         for (q in 1 until n) cum[q] = cum[q - 1] + metres(dense[q * 2 - 2], dense[q * 2 - 1], dense[q * 2], dense[q * 2 + 1])
         val withCands = (0 until n).filter { cands[it].isNotEmpty() }
+        if (withCands.size < n / 2) { why.set("no ways nearby"); return pts }
         val chains = ArrayList<List<Int>>()
         var cur = ArrayList<Int>()
         for (q in withCands) {
@@ -153,7 +154,8 @@ class RoadNet(lines: Sequence<String>) {
         }
         for (q in next until n) out.add(dense[q * 2], dense[q * 2 + 1])
         // Mostly unmatched: probably the wrong kind of way nearby; keep the original shape.
-        if (matched < n * 0.5) return pts
+        if (matched < n * 0.5) { why.set("no connected path"); return pts }
+        why.set("snapped")
         return TransitRoutes.simplify(out.toArray(), SIMPLIFY)
     }
 
@@ -343,15 +345,19 @@ class RoadNet(lines: Sequence<String>) {
             else -> null
         }
 
-        /** Shapes snapped / kept as they were, by mode (for the pack builder's log). */
-        val stats = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+        /** Kilometres of shape snapped, or kept and why, by mode (for the pack builder's log). */
+        val stats = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+        private val why = ThreadLocal<String>()
 
         /** [tile] with every line laid onto the roads and tracks of [net]. */
         fun snapTile(tile: TileData, net: RoadNet): TileData = TileData(tile.routes.map { r ->
             val (kinds, radius) = allowed(r.mode) ?: return@map r
             val parts = r.parts.map { p ->
-                net.snap(p, kinds, radius).also { q ->
-                    stats.getOrPut("${r.mode.name} ${if (q === p) "kept" else "snapped"}") { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                why.set("?")
+                net.snap(p, kinds, radius).also {
+                    var m = 0.0; var k = 0
+                    while (k + 3 < p.size) { m += metres(p[k], p[k + 1], p[k + 2], p[k + 3]); k += 2 }
+                    stats.getOrPut("${r.mode.name} ${why.get()}") { java.util.concurrent.atomic.AtomicLong() }.addAndGet(m.toLong())
                 }
             }
             var s = 90f; var n = -90f; var w = 180f; var e = -180f

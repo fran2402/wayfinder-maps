@@ -68,33 +68,41 @@
     "north-america/us/california"
   ],
   "london": [
-    "europe/united-kingdom/england/greater-london"
+    "europe/great-britain"
   ],
   "paris": [
-    "europe/france/ile-de-france"
+    "europe/france"
   ],
   "berlin": [
-    "europe/germany/berlin",
-    "europe/germany/brandenburg"
+    "europe/germany",
+    "europe/poland"
   ],
   "vienna": [
-    "europe/austria"
+    "europe/austria",
+    "europe/slovakia",
+    "europe/czech-republic",
+    "europe/hungary"
   ],
   "zagreb": [
-    "europe/croatia"
+    "europe/croatia",
+    "europe/slovenia",
+    "europe/bosnia-herzegovina",
+    "europe/hungary"
   ],
   "amsterdam": [
-    "europe/netherlands/noord-holland"
+    "europe/netherlands"
   ],
   "madrid": [
     "europe/spain"
   ],
   "new-york": [
     "north-america/us/new-york",
-    "north-america/us/new-jersey"
+    "north-america/us/new-jersey",
+    "north-america/us/connecticut",
+    "north-america/us/pennsylvania"
   ],
   "tokyo": [
-    "asia/japan/kanto"
+    "asia/japan"
   ],
   "japan": [
     "asia/japan"
