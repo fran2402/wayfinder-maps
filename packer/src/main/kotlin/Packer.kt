@@ -34,10 +34,15 @@ fun main(args: Array<String>) {
             }
             File(args[1]).writeText(JSONArray(ids).toString())
         }
-        "build" -> build(args[1], File(args[2]), args.getOrNull(3)?.let(::File)?.takeIf { it.isFile && it.length() > 0 })
+        "build" -> build(
+            args[1], File(args[2]),
+            args.getOrNull(3)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
+            args.getOrNull(4)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
+        )
         "selftest" -> {
             selfTest()
             // `selftest <bikes.json>` also reads a bike extract, as a check of the OSM step.
+            args.getOrNull(2)?.let { f -> alignTest(File(f)) }
             args.getOrNull(1)?.let { f ->
                 val t = File(f).reader().use { app.wayfinder.data.BikeRoutes.parse(it) }
                 println("bike extract: ${t.routes.size} routes, ${t.routes.sumOf { it.parts.size }} ways: " +
@@ -54,7 +59,7 @@ private val SHARDS = mapOf("europe" to 8, "north-america" to 6, "australia-nz" t
 /** Largest pack file; GitHub release files must stay under 2 GiB. */
 private const val PART_BYTES = 1_800_000_000L
 
-private fun build(spec: String, out: File, bikeJson: File?) = runBlocking(Dispatchers.Default) {
+private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) = runBlocking(Dispatchers.Default) {
     // "europe@3/8" builds the third of eight shards of Europe.
     val id = spec.substringBefore('@')
     val (shard, shards) = spec.substringAfter('@', "1/1").split('/').map { it.toInt() }
@@ -89,6 +94,18 @@ private fun build(spec: String, out: File, bikeJson: File?) = runBlocking(Dispat
             }
         }
         return false
+    }
+
+    // OSM public transport routes: lines are laid onto their geometry (the tracks and roads the
+    // map draws) wherever line number, kind and path match.
+    transitJson?.let { f ->
+        runCatching { f.reader().buffered(1 shl 16).use { app.wayfinder.data.BikeRoutes.parse(it) } }
+            .onFailure { System.err.println("  transit extract unreadable: ${it.message}") }
+            .getOrNull()?.let { osm ->
+                val aligner = app.wayfinder.data.OsmAlign(osm)
+                println("$name: ${aligner.size} OSM transit routes to align with")
+                store.align = { t, area -> aligner.align(t, area) }
+            }
     }
 
     // Bike routes from an OpenStreetMap extract (fast, prepared by the workflow) when there is one;
@@ -199,4 +216,18 @@ private fun selfTest() {
         }
     }
     println("codec self-test passed")
+}
+
+/** A rough line 2 near an OSM tram 2 snaps onto it; a line 3 in the same place does not. */
+private fun alignTest(transit: File) {
+    val osm = transit.reader().use { app.wayfinder.data.BikeRoutes.parse(it) }
+    val aligner = app.wayfinder.data.OsmAlign(osm)
+    fun line(ref: String) = app.wayfinder.data.TileRoute(
+        "Tram|$ref|#FF0000", app.wayfinder.data.TransitMode.Tram, "tram", ref, "", 0, 0, 3,
+        listOf(floatArrayOf(45.8013f, 15.9518f, 45.8032f, 15.9561f, 45.8058f, 15.9622f)), intArrayOf(1), emptyList(),
+        app.wayfinder.data.Bounds(45.8013, 15.9518, 45.8058, 15.9622),
+    )
+    val area = app.wayfinder.data.Bounds(45.0, 15.0, 46.5, 16.5)
+    val out = aligner.align(app.wayfinder.data.TileData(listOf(line("02"), line("3")), false), area)
+    out.routes.forEach { r -> println("align: line ${r.ref} -> ${r.parts.size} part(s), ${r.parts.sumOf { it.size / 2 }} points, first ${r.parts.first().take(2)}") }
 }

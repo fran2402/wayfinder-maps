@@ -65,9 +65,10 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - name: Bike routes from OpenStreetMap extracts
-        # Geofabrik country extracts, filtered locally: far faster than asking Overpass.
-        # Any failure just leaves the builder to fall back to Overpass.
+      - name: Routes from OpenStreetMap extracts
+        # Geofabrik country extracts, filtered locally to route relations: bike routes (far faster
+        # than Overpass) and public transport routes (to lay lines onto the real tracks and roads).
+        # Any failure just leaves the builder to fall back to Overpass and Transitous shapes.
         continue-on-error: true
         env:
           SPEC: ${{ matrix.region }}
@@ -81,13 +82,13 @@ jobs:
           for p in $paths; do
             f="osm/$(echo "$p" | tr / _).osm.pbf"
             curl -fsSL --retry 3 -o "$f" "https://download.geofabrik.de/$p-latest.osm.pbf"
-            osmium tags-filter "$f" r/route=bicycle,mtb -o "$f.bikes.pbf" --overwrite
+            osmium tags-filter "$f" r/route=bicycle,mtb,bus,trolleybus,tram,train,subway,light_rail,monorail -o "$f.routes.pbf" --overwrite
             rm -f "$f"
           done
-          osmium merge osm/*.bikes.pbf -o osm/bikes.pbf --overwrite
-          python3 packer/scripts/bikes.py osm/bikes.pbf "$PWD/bikes.json"
+          osmium merge osm/*.routes.pbf -o osm/routes.pbf --overwrite
+          python3 packer/scripts/osm_routes.py osm/routes.pbf "$PWD/bikes.json" "$PWD/transit.json"
       - name: Build ${{ matrix.region }}
-        run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out $PWD/bikes.json"
+        run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out $PWD/bikes.json $PWD/transit.json"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

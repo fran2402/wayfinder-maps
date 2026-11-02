@@ -120,7 +120,7 @@ fun LinesSheet(
 @Composable
 private fun ModeFilterGroup(modes: Set<TransitMode>, onToggle: (TransitMode) -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val all = TransitMode.entries
+    val all = TransitMode.entries - TransitMode.Coach
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween), modifier = Modifier.fillMaxWidth()) {
         all.forEachIndexed { index, mode ->
             ToggleButton(

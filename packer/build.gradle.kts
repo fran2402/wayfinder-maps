@@ -21,5 +21,5 @@ sourceSets {
 
 application {
     mainClass.set("PackerKt")
-    applicationDefaultJvmArgs = listOf("-Xmx5g")
+    applicationDefaultJvmArgs = listOf("-Xmx10g")
 }

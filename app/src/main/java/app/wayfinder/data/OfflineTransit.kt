@@ -277,6 +277,9 @@ class OfflineTransit(context: Context) {
      */
     var minStartDepth = MIN_START_DEPTH
 
+    /** Applied to each street tile before it is saved (the pack builder lays lines onto OSM geometry). */
+    var align: ((TileData, Bounds) -> TileData)? = null
+
     /** True once a download square's lines are on disk. */
     fun hasLines(x: Int, y: Int) = has(Level.City, x, y)
 
@@ -321,7 +324,7 @@ class OfflineTransit(context: Context) {
 
         val city = TransitRoutes.TileBuilder()
         for (i in childBounds.indices) {
-            val t = builders[i].build()
+            val t = builders[i].build().let { b -> align?.invoke(b, childBounds[i]) ?: b }
             write(Level.Street, x * k + i % k, y * k + i / k, t)
             city.addAll(withContext(Dispatchers.Default) { TransitRoutes.reduce(t, Level.City.detailZoom, Int.MAX_VALUE) })
         }

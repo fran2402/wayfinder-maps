@@ -312,6 +312,8 @@ object TransitRoutes {
         for (route in ordered.take(maxRoutes)) {
             val (baseMode, osmRoute) = classify(route.mode)
             val mode = if (baseMode == TransitMode.Bus && isCoach(route)) TransitMode.Coach else baseMode
+            // Intercity coaches aren't shown.
+            if (mode == TransitMode.Coach) continue
             val numberRef = route.ref.takeIf { it.length <= 10 } ?: ""
             // Coaches often have no line number: label them by operator (or name) so they still
             // get a badge and can be picked.
@@ -564,7 +566,7 @@ object TransitRoutes {
             Bounds(s.toDouble(), w.toDouble(), n.toDouble(), e.toDouble()), r.routeIdx)
     }
 
-    fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false, overlapZoom: Double? = null): TransitData {
+    fun merge(tiles: Collection<TileData>, withStops: Boolean = true, spread: Boolean = false, overlapZoom: Double? = null, modes: Set<TransitMode>? = null): TransitData {
         // Decimals the map needs: 5 (about 1 m) close in, 4 (about 10 m) when zoomed out.
         val prec = if (overlapZoom != null && overlapZoom < 11.0) 4 else 5
         class Acc(val first: TileRoute) {
@@ -578,6 +580,8 @@ object TransitRoutes {
         for (tile in tiles) {
             zoomFiltered = zoomFiltered || tile.zoomFiltered
             for (r in tile.routes) {
+                // Coaches are left out; so are types switched off (bike routes pass modes = null).
+                if (modes != null && (r.mode == TransitMode.Coach || r.mode !in modes)) continue
                 val acc = byKey.getOrPut(r.key) { Acc(r) }
                 r.parts.forEachIndexed { k, part -> if (acc.ids.add(r.partIds[k])) acc.parts += part }
                 if (r.stops.size > acc.stops.size) acc.stops = r.stops
@@ -697,10 +701,10 @@ object TransitRoutes {
 
     /**
      * Removes the stretches of each line already covered by an earlier (more important) line
-     * in the same direction band, judged on a grid of about 3 pixels at [zoom].
+     * in the same direction band, judged on a grid of about 1.5 pixels at [zoom].
      */
     private fun dropOverlaps(lines: List<List<FloatArray>>, zoom: Double): List<List<FloatArray>> {
-        val cell = 360.0 / (256.0 * Math.pow(2.0, zoom)) * 3.0
+        val cell = 360.0 / (256.0 * Math.pow(2.0, zoom)) * 1.5
         val buckets = 8
         val taken = HashSet<Long>(1 shl 16)
         fun keyOf(lat: Double, lon: Double, dir: Int): Long {

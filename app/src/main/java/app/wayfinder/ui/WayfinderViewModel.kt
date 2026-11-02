@@ -25,6 +25,7 @@ import app.wayfinder.data.Router
 import app.wayfinder.data.StopRef
 import app.wayfinder.data.Tier
 import app.wayfinder.data.TileData
+import app.wayfinder.data.TileRoute
 import app.wayfinder.data.TileId
 import app.wayfinder.data.Tiles
 import app.wayfinder.data.TransitData
@@ -268,7 +269,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     var showBike by mutableStateOf(false)
         private set
     /** Which kinds of public transport are drawn. */
-    var transitModes by mutableStateOf(TransitMode.entries.toSet())
+    var transitModes by mutableStateOf(TransitMode.entries.toSet() - TransitMode.Coach)
         private set
     var transitLines by mutableStateOf(Overlays.EMPTY)
         private set
@@ -317,18 +318,46 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         selectedLine = line
         val cached = tileCache.values.flatMap { t -> t.routes.filter { it.key == key } }
         selectedGeo = TransitRoutes.lineGeoJson(key, cached)
-        val ids = cached.flatMap { it.routeIdx.toList() }.distinct().take(8)
         selectionJob?.cancel()
-        if (ids.isEmpty()) return
         selectionJob = viewModelScope.launch {
-            val parts = ids.mapNotNull { id ->
-                try { TransitRoutes.loadRouteDetails(id) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
-            }.flatMap { it.routes }
+            // Full resolution: the line's shapes from the saved street tiles under it, growing the
+            // area until the whole line is covered.
+            val found = ArrayList<TileRoute>()
+            val read = HashSet<Pair<Int, Int>>()
+            var area = line.bounds
+            repeat(4) {
+                val z = OfflineTransit.Level.Street.z
+                val a = area.expanded(0.05)
+                val xs = Tiles.lonToX(a.west, z)..Tiles.lonToX(a.east, z)
+                val ys = Tiles.latToY(a.north, z)..Tiles.latToY(a.south, z)
+                val todo = xs.flatMap { x -> ys.map { y -> x to y } }
+                    .filter { it !in read && offlineStore.has(OfflineTransit.Level.Street, it.first, it.second) }
+                if (todo.isEmpty() || read.size + todo.size > 400) return@repeat
+                read += todo
+                todo.chunked(8).forEach { chunk ->
+                    chunk.map { (x, y) -> async(Dispatchers.IO) { offlineStore.read(OfflineTransit.Level.Street, x, y) } }
+                        .awaitAll().filterNotNull().forEach { t -> found += t.routes.filter { it.key == key } }
+                }
+                val grown = found.fold(area) { acc, r ->
+                    Bounds(minOf(acc.south, r.bounds.south), minOf(acc.west, r.bounds.west), maxOf(acc.north, r.bounds.north), maxOf(acc.east, r.bounds.east))
+                }
+                if (grown == area) return@repeat
+                area = grown
+            }
+            var parts: List<TileRoute> = found
+            if (parts.isEmpty()) {
+                // Not saved: ask Transitous for the route. Its route numbers change whenever it
+                // reloads timetables, so only routes that really are this line are kept.
+                val ids = cached.flatMap { it.routeIdx.toList() }.distinct().take(8)
+                parts = ids.mapNotNull { id ->
+                    try { TransitRoutes.loadRouteDetails(id) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                }.flatMap { it.routes }.filter { it.key == key }
+            }
             if (parts.isEmpty() || highlightedLine != key) return@launch
             val whole = withContext(storeThread) {
-                TransitRoutes.TileBuilder().apply { (cached + parts).forEach { add(it) } }.build().routes
+                TransitRoutes.TileBuilder().apply { parts.forEach { add(it) } }.build().routes
             }
-            val r = whole.firstOrNull { it.key == key } ?: whole.first()
+            val r = whole.first()
             selectedGeo = withContext(storeThread) { TransitRoutes.lineGeoJson(key, whole) }
             val stops = parts.maxByOrNull { it.stops.size }?.stops.orEmpty()
             selectedLine = line.copy(bounds = r.bounds, stops = if (stops.size > line.stops.size) stops else line.stops)
@@ -336,6 +365,7 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             focusRequest++
         }
     }
+
     /** Area the camera should frame after a line is picked; bumped with [focusRequest]. */
     var focusBounds by mutableStateOf<Bounds?>(null)
         private set
@@ -709,18 +739,20 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
      * removing the last one shows everything again.
      */
     fun toggleMode(mode: TransitMode) {
-        val all = TransitMode.entries.toSet()
+        val all = TransitMode.entries.toSet() - TransitMode.Coach
         transitModes = when {
             transitModes == all -> setOf(mode)
             mode in transitModes -> (transitModes - mode).ifEmpty { all }
             else -> transitModes + mode
         }
         refreshLegend()
+        rebuildTransit() // hidden types are left out of the drawing (and of shared-track merging)
     }
 
     fun highlight(key: String?) {
-        if (key == null || highlightedLine == key) { clearSelection(); departures = null; return }
+        if (key == null || highlightedLine == key) { clearSelection(); departures = null; rebuildTransit(); return }
         highlightedLine = key
+        rebuildTransit()
         departures = null
         val picked = key
         transitData?.routes?.firstOrNull { it.info.key == picked }?.let { line ->
@@ -883,10 +915,10 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
         val t = offlineStore.read(lvl, next.x, next.y) ?: return null
         return when (lvl) {
             OfflineTransit.Level.Rail -> {
-                // Far out, only what you can see from a continent away: trains, coaches, ferries.
+                // Far out, only the rail networks (trains, metro, trams) and ferries.
                 val far = next.lod < 7
                 val kept = if (far) TileData(t.routes.filter {
-                    it.mode == TransitMode.Train || it.mode == TransitMode.Coach || it.mode == TransitMode.Ferry
+                    it.mode == TransitMode.Train || it.mode == TransitMode.Metro || it.mode == TransitMode.Tram || it.mode == TransitMode.Ferry
                 }, t.zoomFiltered) else t
                 TransitRoutes.reduce(kept, next.lod, if (far) 400 else 1_500)
             }
@@ -957,7 +989,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
             val data = withContext(storeThread) { TransitRoutes.merge(
                     tiles, withStops = zoom >= 11.0, spread = zoom >= SPREAD_ZOOM,
                     // Below street level, lines sharing a track are drawn once.
-                    overlapZoom = if (zoom < 13.0) zoom else null,
+                    // Not while one line is picked: shared stretches would show as holes in it.
+                    overlapZoom = if (zoom < 13.0 && highlightedLine == null) zoom else null,
+                    modes = transitModes,
                 ) }
             transitData = data
             transitPills = if (zoom >= 13.5) data.routes.map { it.info } else emptyList()

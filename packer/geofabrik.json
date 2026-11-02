@@ -1,24 +1,106 @@
 {
-  "uk-ireland": ["europe/great-britain", "europe/ireland-and-northern-ireland"],
-  "france": ["europe/france"],
-  "benelux": ["europe/belgium", "europe/netherlands", "europe/luxembourg"],
-  "germany": ["europe/germany"],
-  "alps": ["europe/switzerland", "europe/austria", "europe/liechtenstein"],
-  "italy": ["europe/italy"],
-  "iberia": ["europe/spain", "europe/portugal", "europe/andorra"],
-  "nordics": ["europe/norway", "europe/sweden", "europe/finland", "europe/denmark"],
-  "central-europe": ["europe/poland", "europe/czech-republic", "europe/slovakia", "europe/hungary"],
-  "balkans": ["europe/croatia", "europe/slovenia", "europe/bosnia-herzegovina", "europe/serbia", "europe/montenegro", "europe/albania", "europe/macedonia", "europe/kosovo"],
-  "greece": ["europe/greece"],
-  "us-northeast": ["north-america/us/new-york", "north-america/us/new-jersey", "north-america/us/pennsylvania", "north-america/us/connecticut", "north-america/us/massachusetts", "north-america/us/rhode-island", "north-america/us/vermont", "north-america/us/new-hampshire", "north-america/us/maryland", "north-america/us/delaware"],
-  "california": ["north-america/us/california"],
-  "london": ["europe/united-kingdom/england/greater-london"],
-  "paris": ["europe/france/ile-de-france"],
-  "berlin": ["europe/germany/berlin", "europe/germany/brandenburg"],
-  "vienna": ["europe/austria"],
-  "zagreb": ["europe/croatia"],
-  "amsterdam": ["europe/netherlands/noord-holland"],
-  "madrid": ["europe/spain"],
-  "new-york": ["north-america/us/new-york", "north-america/us/new-jersey"],
-  "tokyo": ["asia/japan/kanto"]
+  "uk-ireland": [
+    "europe/great-britain",
+    "europe/ireland-and-northern-ireland"
+  ],
+  "france": [
+    "europe/france"
+  ],
+  "benelux": [
+    "europe/belgium",
+    "europe/netherlands",
+    "europe/luxembourg"
+  ],
+  "germany": [
+    "europe/germany"
+  ],
+  "alps": [
+    "europe/switzerland",
+    "europe/austria",
+    "europe/liechtenstein"
+  ],
+  "italy": [
+    "europe/italy"
+  ],
+  "iberia": [
+    "europe/spain",
+    "europe/portugal",
+    "europe/andorra"
+  ],
+  "nordics": [
+    "europe/norway",
+    "europe/sweden",
+    "europe/finland",
+    "europe/denmark"
+  ],
+  "central-europe": [
+    "europe/poland",
+    "europe/czech-republic",
+    "europe/slovakia",
+    "europe/hungary"
+  ],
+  "balkans": [
+    "europe/croatia",
+    "europe/slovenia",
+    "europe/bosnia-herzegovina",
+    "europe/serbia",
+    "europe/montenegro",
+    "europe/albania",
+    "europe/macedonia",
+    "europe/kosovo"
+  ],
+  "greece": [
+    "europe/greece"
+  ],
+  "us-northeast": [
+    "north-america/us/new-york",
+    "north-america/us/new-jersey",
+    "north-america/us/pennsylvania",
+    "north-america/us/connecticut",
+    "north-america/us/massachusetts",
+    "north-america/us/rhode-island",
+    "north-america/us/vermont",
+    "north-america/us/new-hampshire",
+    "north-america/us/maryland",
+    "north-america/us/delaware"
+  ],
+  "california": [
+    "north-america/us/california"
+  ],
+  "london": [
+    "europe/united-kingdom/england/greater-london"
+  ],
+  "paris": [
+    "europe/france/ile-de-france"
+  ],
+  "berlin": [
+    "europe/germany/berlin",
+    "europe/germany/brandenburg"
+  ],
+  "vienna": [
+    "europe/austria"
+  ],
+  "zagreb": [
+    "europe/croatia"
+  ],
+  "amsterdam": [
+    "europe/netherlands/noord-holland"
+  ],
+  "madrid": [
+    "europe/spain"
+  ],
+  "new-york": [
+    "north-america/us/new-york",
+    "north-america/us/new-jersey"
+  ],
+  "tokyo": [
+    "asia/japan/kanto"
+  ],
+  "japan": [
+    "asia/japan"
+  ],
+  "australia-nz": [
+    "australia-oceania/australia",
+    "australia-oceania/new-zealand"
+  ]
 }
