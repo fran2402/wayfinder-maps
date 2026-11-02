@@ -14,6 +14,12 @@ import kotlin.math.sqrt
  * instead of cutting the corner. Points with nothing suitable nearby keep their place.
  */
 class RoadNet(lines: Sequence<String>) {
+    private class FloatList(cap: Int) {
+        var a = FloatArray(cap); var n = 0
+        fun add(x: Float, y: Float) { if (n + 2 > a.size) a = a.copyOf(a.size * 2 + 2); a[n++] = x; a[n++] = y }
+        fun toArray() = a.copyOf(n)
+    }
+
     private val ways = ArrayList<FloatArray>()
     private val kinds = ArrayList<Char>()
     private var segWay = IntArray(1 shl 14)
@@ -58,56 +64,183 @@ class RoadNet(lines: Sequence<String>) {
         }
     }
 
-    /** [pts] ([lat, lon, …]) laid onto ways whose kind is in [allowed]. */
+    // ---------- Road graph (built lazily: only for map matching) ----------
+
+    private var nodeA = IntArray(0)     // per segment: start node
+    private var nodeB = IntArray(0)     // per segment: end node
+    private var segLen = DoubleArray(0) // per segment: length in metres
+    private var adj: Array<IntArray> = emptyArray() // per node: segments touching it
+    private var nodeLat = FloatArray(0)
+    private var nodeLon = FloatArray(0)
+
+    private val graph by lazy {
+        val ids = HashMap<Long, Int>()
+        val lats = FloatList(1024); 
+        fun node(la: Float, lo: Float): Int = ids.getOrPut((Math.round(la * 1e6).toLong() shl 32) xor (Math.round(lo * 1e6).toLong() and 0xFFFFFFFFL)) {
+            lats.add(la, lo); ids.size
+        }
+        nodeA = IntArray(segCount); nodeB = IntArray(segCount); segLen = DoubleArray(segCount)
+        for (sg in 0 until segCount) {
+            val p = ways[segWay[sg]]; val k = segIdx[sg] * 2
+            nodeA[sg] = node(p[k], p[k + 1]); nodeB[sg] = node(p[k + 2], p[k + 3])
+            segLen[sg] = metres(p[k], p[k + 1], p[k + 2], p[k + 3])
+        }
+        val count = IntArray(ids.size)
+        for (sg in 0 until segCount) { count[nodeA[sg]]++; count[nodeB[sg]]++ }
+        adj = Array(ids.size) { IntArray(count[it]) }
+        val fill = IntArray(ids.size)
+        for (sg in 0 until segCount) { adj[nodeA[sg]][fill[nodeA[sg]]++] = sg; adj[nodeB[sg]][fill[nodeB[sg]]++] = sg }
+        val all = lats.toArray()
+        nodeLat = FloatArray(ids.size) { all[it * 2] }; nodeLon = FloatArray(ids.size) { all[it * 2 + 1] }
+        true
+    }
+
+    private class Cand(val seg: Int, val frac: Double, val lat: Float, val lon: Float, val cost: Double)
+
+    /**
+     * [pts] ([lat, lon, …]) laid onto ways whose kind is in [allowed], by map matching: for each
+     * point along the shape, the nearby ways it could be on; then the sequence of those that is
+     * both close to the shape and connected through the network with a travel distance like the
+     * shape's own (Viterbi). The result follows the roads from junction to junction.
+     */
     fun snap(pts: FloatArray, allowed: String, radiusM: Double): FloatArray {
-        val dense = densify(pts)
+        graph
+        val dense = densify(pts, 20.0)
         val n = dense.size / 2
         if (n < 2) return pts
-        val out = FloatList(dense.size + 16)
-        var prevWay = -1
-        var lastWay = -1      // the way before a stretch with nothing near (a cut corner, say)
-        var gapStart = -1     // where that stretch begins in [out]
-        var gapLen = 0.0
-        var snapped = 0
-        for (i in 0 until n) {
+        val cands = Array(n) { i ->
             val lat = dense[i * 2]; val lon = dense[i * 2 + 1]
             val a = maxOf(0, i - 1); val b = minOf(n - 1, i + 1)
-            val hx = (dense[b * 2 + 1] - dense[a * 2 + 1]) * cos(Math.toRadians(lat.toDouble())); val hy = (dense[b * 2] - dense[a * 2]).toDouble()
-            var best = -1; var bestCost = Double.MAX_VALUE; var bLat = 0f; var bLon = 0f
-            forNear(lat, lon) { s ->
-                val w = segWay[s]
+            val c = cos(Math.toRadians(lat.toDouble()))
+            val hx = (dense[b * 2 + 1] - dense[a * 2 + 1]) * c; val hy = (dense[b * 2] - dense[a * 2]).toDouble()
+            val list = ArrayList<Cand>()
+            forNear(lat, lon) { sg ->
+                val w = segWay[sg]
                 if (allowed.indexOf(kinds[w]) < 0) return@forNear
-                val p = ways[w]; val k = segIdx[s] * 2
-                val (pLat, pLon, d) = project(lat, lon, p[k], p[k + 1], p[k + 2], p[k + 3])
+                val p = ways[w]; val k = segIdx[sg] * 2
+                val (pLat, pLon, d, f) = projectT(lat, lon, p[k], p[k + 1], p[k + 2], p[k + 3])
                 if (d > radiusM) return@forNear
-                val sx = (p[k + 3] - p[k + 1]) * cos(Math.toRadians(lat.toDouble())); val sy = (p[k + 2] - p[k]).toDouble()
+                val sx = (p[k + 3] - p[k + 1]) * c; val sy = (p[k + 2] - p[k]).toDouble()
                 val hl = sqrt(hx * hx + hy * hy); val sl = sqrt(sx * sx + sy * sy)
                 val sin = if (hl > 0 && sl > 0) sqrt(maxOf(0.0, 1 - ((hx * sx + hy * sy) / (hl * sl)).let { it * it })) else 0.0
-                val cost = d + 30.0 * sin - (if (w == prevWay) 8.0 else 0.0)
-                if (cost < bestCost) { bestCost = cost; best = s; bLat = pLat; bLon = pLon }
+                list += Cand(sg, f, pLat, pLon, d * d / (2 * SIGMA * SIGMA) + 3.0 * sin)
             }
-            if (best < 0) {
-                if (prevWay >= 0) { lastWay = prevWay; gapStart = out.n; gapLen = 0.0 }
-                else if (gapStart >= 0 && out.n >= 2) gapLen += metres(out.a[out.n - 2], out.a[out.n - 1], lat, lon)
-                out.add(lat, lon); prevWay = -1; continue
-            }
-            val w = segWay[best]
-            if (prevWay < 0 && lastWay >= 0 && gapLen < 250.0) {
-                // Back on a street after a short stretch with none: replace the stretch with the
-                // junction between the two streets (or nothing, when it is the same street).
-                if (w == lastWay) out.n = gapStart
-                else junction(lastWay, w, bLat, bLon, 250.0)?.let { (jl, jo) -> out.n = gapStart; out.add(jl, jo) }
-            } else if (prevWay >= 0 && w != prevWay) {
-                junction(prevWay, w, bLat, bLon, 60.0)?.let { (jl, jo) -> out.add(jl, jo) }
-            }
-            lastWay = -1; gapStart = -1
-            out.add(bLat, bLon)
-            prevWay = w
-            snapped++
+            list.sortedBy { it.cost }.take(MAX_CANDS)
         }
+
+        // Distance along the shape, so short stretches with no way nearby (a cut corner) can be
+        // bridged through the network; longer ones split the matching into separate pieces.
+        val cum = DoubleArray(n)
+        for (q in 1 until n) cum[q] = cum[q - 1] + metres(dense[q * 2 - 2], dense[q * 2 - 1], dense[q * 2], dense[q * 2 + 1])
+        val withCands = (0 until n).filter { cands[it].isNotEmpty() }
+        val chains = ArrayList<List<Int>>()
+        var cur = ArrayList<Int>()
+        for (q in withCands) {
+            if (cur.isNotEmpty() && cum[q] - cum[cur.last()] > MAX_GAP_M) { chains += cur; cur = ArrayList() }
+            cur += q
+        }
+        if (cur.isNotEmpty()) chains += cur
+
+        val out = FloatList(dense.size + 32)
+        var matched = 0
+        var next = 0 // first point not yet written
+        for (chain in chains) {
+            for (q in next until chain.first()) out.add(dense[q * 2], dense[q * 2 + 1])
+            val path = if (chain.size >= 2) viterbi(cands, cum, chain) else null
+            if (path == null) for (q in chain.first()..chain.last()) out.add(dense[q * 2], dense[q * 2 + 1])
+            else { var k = 0; while (k < path.size) { out.add(path[k], path[k + 1]); k += 2 }; matched += chain.last() - chain.first() + 1 }
+            next = chain.last() + 1
+        }
+        for (q in next until n) out.add(dense[q * 2], dense[q * 2 + 1])
         // Mostly unmatched: probably the wrong kind of way nearby; keep the original shape.
-        if (snapped < n * 0.6) return pts
+        if (matched < n * 0.6) return pts
         return TransitRoutes.simplify(out.toArray(), SIMPLIFY)
+    }
+
+    /** Best connected candidate sequence for the points [ids] (in order), as geometry; null if none connects. */
+    private fun viterbi(cands: Array<List<Cand>>, cum: DoubleArray, ids: List<Int>): FloatArray? {
+        val len = ids.size
+        val score = arrayOfNulls<DoubleArray>(len)
+        val back = arrayOfNulls<IntArray>(len)
+        val legs = arrayOfNulls<Array<FloatArray?>>(len) // geometry from the chosen previous candidate
+        score[0] = DoubleArray(cands[ids[0]].size) { cands[ids[0]][it].cost }
+        for (t in 1 until len) {
+            val prev = cands[ids[t - 1]]; val cur = cands[ids[t]]
+            val gc = cum[ids[t]] - cum[ids[t - 1]]
+            val sc = DoubleArray(cur.size) { Double.MAX_VALUE }
+            val bk = IntArray(cur.size) { -1 }
+            val lg = arrayOfNulls<FloatArray>(cur.size)
+            for ((pi, p) in prev.withIndex()) {
+                val base = score[t - 1]!![pi]
+                if (base == Double.MAX_VALUE) continue
+                val routes = route(p, cur, maxOf(gc * 3, gc + 150.0))
+                for ((ci, c) in cur.withIndex()) {
+                    val (dist, geom) = routes[ci] ?: continue
+                    val s = base + c.cost + abs(dist - gc) / BETA
+                    if (s < sc[ci]) { sc[ci] = s; bk[ci] = pi; lg[ci] = geom }
+                }
+            }
+            if (sc.all { it == Double.MAX_VALUE }) return null // the chain breaks: no connected way
+            score[t] = sc; back[t] = bk; legs[t] = lg
+        }
+        var best = score[len - 1]!!.indices.minByOrNull { score[len - 1]!![it] } ?: return null
+        val pieces = ArrayList<FloatArray>()
+        for (t in len - 1 downTo 1) {
+            pieces += legs[t]!![best]!!
+            best = back[t]!![best]
+        }
+        val first = cands[ids[0]][best]
+        val out = FloatList(64)
+        out.add(first.lat, first.lon)
+        for (pc in pieces.asReversed()) { var k = 0; while (k < pc.size) { out.add(pc[k], pc[k + 1]); k += 2 } }
+        return out.toArray()
+    }
+
+    /**
+     * Shortest network distances (and their geometry) from candidate [a] to each of [targets],
+     * searching no further than [limit] metres. Direction of travel is not restricted.
+     */
+    private fun route(a: Cand, targets: List<Cand>, limit: Double): Array<Pair<Double, FloatArray>?> {
+        val res = arrayOfNulls<Pair<Double, FloatArray>>(targets.size)
+        // Same segment: straight along it.
+        for ((ti, t) in targets.withIndex()) if (t.seg == a.seg) {
+            res[ti] = abs(t.frac - a.frac) * segLen[a.seg] to floatArrayOf(t.lat, t.lon)
+        }
+        val dist = HashMap<Int, Double>(); val prevSeg = HashMap<Int, Int>(); val prevNode = HashMap<Int, Int>()
+        val pq = java.util.PriorityQueue<Pair<Double, Int>>(compareBy { it.first })
+        val sa = nodeA[a.seg]; val sb = nodeB[a.seg]
+        dist[sa] = a.frac * segLen[a.seg]; dist[sb] = (1 - a.frac) * segLen[a.seg]
+        pq += dist[sa]!! to sa; pq += dist[sb]!! to sb
+        val wanted = HashSet<Int>(); for (t in targets) { wanted += nodeA[t.seg]; wanted += nodeB[t.seg] }
+        var found = 0
+        while (pq.isNotEmpty() && found < wanted.size) {
+            val (d, u) = pq.poll()
+            if (d > (dist[u] ?: Double.MAX_VALUE) || d > limit) continue
+            if (u in wanted) found++
+            for (sg in adj[u]) {
+                val v = if (nodeA[sg] == u) nodeB[sg] else nodeA[sg]
+                val nd = d + segLen[sg]
+                if (nd < (dist[v] ?: Double.MAX_VALUE) && nd <= limit) { dist[v] = nd; prevSeg[v] = sg; prevNode[v] = u; pq += nd to v }
+            }
+        }
+        fun nodePath(end: Int): FloatArray {
+            val nodes = ArrayList<Int>()
+            var u: Int? = end
+            while (u != null && u != sa && u != sb) { nodes += u; u = prevNode[u] }
+            if (u != null) nodes += u
+            nodes.reverse()
+            return FloatArray(nodes.size * 2) { if (it % 2 == 0) nodeLat[nodes[it / 2]] else nodeLon[nodes[it / 2]] }
+        }
+        for ((ti, t) in targets.withIndex()) {
+            if (t.seg == a.seg) continue
+            val viaA = dist[nodeA[t.seg]]?.let { it + t.frac * segLen[t.seg] }
+            val viaB = dist[nodeB[t.seg]]?.let { it + (1 - t.frac) * segLen[t.seg] }
+            val useA = viaA != null && (viaB == null || viaA <= viaB)
+            val total = (if (useA) viaA else viaB) ?: continue
+            val nodes = nodePath(if (useA) nodeA[t.seg] else nodeB[t.seg])
+            res[ti] = total to (nodes + floatArrayOf(t.lat, t.lon))
+        }
+        return res
     }
 
     /** A vertex shared by ways [a] and [b] near the snapped point (where one street meets the next). */
@@ -139,16 +272,17 @@ class RoadNet(lines: Sequence<String>) {
         }
     }
 
-    private class FloatList(cap: Int) {
-        var a = FloatArray(cap); var n = 0
-        fun add(x: Float, y: Float) { if (n + 2 > a.size) a = a.copyOf(a.size * 2 + 2); a[n++] = x; a[n++] = y }
-        fun toArray() = a.copyOf(n)
-    }
-
     companion object {
         /** About 55 m. */
         private const val CELL = 0.0005f
         private val SIMPLIFY = (360.0 / (256.0 * Math.pow(2.0, 17.0)) / 3.0).toFloat()
+        /** GPS-like noise of the source shapes, metres. */
+        private const val SIGMA = 12.0
+        /** How strongly travel distance must agree with the shape's own distance. */
+        private const val BETA = 8.0
+        private const val MAX_CANDS = 6
+        /** Longest stretch with no way nearby that is bridged through the network. */
+        private const val MAX_GAP_M = 300.0
 
         private fun key(cx: Long, cy: Long) = (cx shl 32) xor (cy and 0xFFFFFFFFL)
         private fun cell(lat: Float, lon: Float): Long =
@@ -157,6 +291,19 @@ class RoadNet(lines: Sequence<String>) {
         private fun metres(la0: Float, lo0: Float, la1: Float, lo1: Float): Double {
             val dx = (lo1 - lo0) * cos(Math.toRadians(la0.toDouble())) * 111_320.0; val dy = (la1 - la0) * 110_540.0
             return sqrt(dx * dx + dy * dy)
+        }
+
+        private data class Proj(val lat: Float, val lon: Float, val d: Double, val t: Double)
+
+        /** Nearest point on a segment, its distance in metres and where along the segment (0..1). */
+        private fun projectT(lat: Float, lon: Float, la0: Float, lo0: Float, la1: Float, lo1: Float): Proj {
+            val c = cos(Math.toRadians(lat.toDouble()))
+            val ax = (lo0 - lon) * c; val ay = (la0 - lat).toDouble(); val bx = (lo1 - lon) * c; val by = (la1 - lat).toDouble()
+            val dx = bx - ax; val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+            val pLat = (la0 + (la1 - la0) * t).toFloat(); val pLon = (lo0 + (lo1 - lo0) * t).toFloat()
+            return Proj(pLat, pLon, metres(lat, lon, pLat, pLon), t)
         }
 
         /** Nearest point on a segment and its distance in metres. */
@@ -170,13 +317,13 @@ class RoadNet(lines: Sequence<String>) {
             return Triple(pLat, pLon, metres(lat, lon, pLat, pLon))
         }
 
-        /** Points no more than ~12 m apart. */
-        private fun densify(pts: FloatArray): FloatArray {
+        /** Points no more than [step] metres apart. */
+        private fun densify(pts: FloatArray, step: Double = 12.0): FloatArray {
             val out = FloatList(pts.size * 2)
             var k = 0
             while (k + 1 < pts.size) {
                 if (k + 3 < pts.size) {
-                    val steps = (metres(pts[k], pts[k + 1], pts[k + 2], pts[k + 3]) / 12.0).toInt().coerceIn(1, 2000)
+                    val steps = (metres(pts[k], pts[k + 1], pts[k + 2], pts[k + 3]) / step).toInt().coerceIn(1, 2000)
                     for (s in 0 until steps) {
                         val f = s.toFloat() / steps
                         out.add(pts[k] + (pts[k + 2] - pts[k]) * f, pts[k + 1] + (pts[k + 3] - pts[k + 1]) * f)

@@ -279,14 +279,16 @@ private fun snapTest(dir: File) {
     File(dir, "ways.geojsonseq").writeText(
         "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.95,45.8],[15.955,45.8],[15.96,45.8]]},\"properties\":{\"highway\":\"primary\"}}\n" +
         "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.96,45.8],[15.96,45.805],[15.96,45.81]]},\"properties\":{\"highway\":\"secondary\"}}\n" +
-        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.95,45.8001],[15.96,45.8001]]},\"properties\":{\"railway\":\"tram\"}}\n"
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.95,45.8001],[15.96,45.8001]]},\"properties\":{\"railway\":\"tram\"}}\n" +
+        // A side street 30 m north of A, not connected: the shape passes closer to it at one point.
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.953,45.80027],[15.957,45.80027]]},\"properties\":{\"highway\":\"residential\"}}\n"
     )
     val pr = ProcessBuilder("python3", "scripts/bucket_ways.py", File(dir, "ways.geojsonseq").path, File(dir, "roads").path).inheritIO().start()
     check(pr.waitFor() == 0)
     val f = File(dir, "roads").listFiles()!!.single()
     val net = f.bufferedReader().useLines { app.wayfinder.data.RoadNet(it) }
     // Off by ~15-20 m and cutting the corner diagonally.
-    val bus = floatArrayOf(45.80015f, 15.9505f, 45.80012f, 15.9570f, 45.8010f, 15.9599f, 45.8080f, 15.96018f)
+    val bus = floatArrayOf(45.80015f, 15.9505f, 45.80018f, 15.9550f, 45.80012f, 15.9570f, 45.8010f, 15.9599f, 45.8080f, 15.96018f)
     val r = app.wayfinder.data.TileRoute("Bus|5|#000", app.wayfinder.data.TransitMode.Bus, "bus", "5", "", 0, 0, 1,
         listOf(bus), intArrayOf(1), emptyList(), app.wayfinder.data.Bounds(45.8, 15.95, 45.81, 15.961))
     val out = app.wayfinder.data.RoadNet.snapTile(app.wayfinder.data.TileData(listOf(r), false), net).routes.single().parts.single()
