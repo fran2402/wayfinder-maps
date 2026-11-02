@@ -9,7 +9,15 @@
   "benelux": [
     "europe/belgium",
     "europe/netherlands",
-    "europe/luxembourg"
+    "europe/luxembourg",
+    "europe/germany/nordrhein-westfalen",
+    "europe/germany/niedersachsen",
+    "europe/germany/rheinland-pfalz",
+    "europe/germany/saarland",
+    "europe/france/nord-pas-de-calais",
+    "europe/france/picardie",
+    "europe/france/champagne-ardenne",
+    "europe/france/lorraine"
   ],
   "germany": [
     "europe/germany"
