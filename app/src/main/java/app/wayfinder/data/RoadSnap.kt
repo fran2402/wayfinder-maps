@@ -153,7 +153,7 @@ class RoadNet(lines: Sequence<String>) {
         }
         for (q in next until n) out.add(dense[q * 2], dense[q * 2 + 1])
         // Mostly unmatched: probably the wrong kind of way nearby; keep the original shape.
-        if (matched < n * 0.6) return pts
+        if (matched < n * 0.5) return pts
         return TransitRoutes.simplify(out.toArray(), SIMPLIFY)
     }
 

@@ -83,7 +83,7 @@ jobs:
             f="osm/$(echo "$p" | tr / _).osm.pbf"
             curl -fsSL --retry 3 -o "$f" "https://download.geofabrik.de/$p-latest.osm.pbf"
             osmium tags-filter "$f" r/route=bicycle,mtb -o "$f.routes.pbf" --overwrite
-            osmium tags-filter "$f" w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,busway,bus_guideway \
+            osmium tags-filter "$f" w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,busway,bus_guideway \
               w/railway=rail,narrow_gauge,light_rail,subway,tram,monorail -o "$f.ways.pbf" --overwrite
             rm -f "$f"
           done
