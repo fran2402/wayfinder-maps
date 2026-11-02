@@ -218,6 +218,9 @@ private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?, 
             .put("built", Instant.now().toString())
             .toString(2)
     )
+    if (app.wayfinder.data.RoadNet.stats.isNotEmpty()) {
+        println("$name: road snapping " + app.wayfinder.data.RoadNet.stats.entries.sortedBy { it.key }.joinToString { "${it.key}: ${it.value.get()}" })
+    }
     alignerForStats?.let { al ->
         println("$name: alignment " + al.stats.entries.sortedBy { it.key }.joinToString { "${it.key}: ${it.value.get()}" })
         al.examples.forEach { println("  $it") }

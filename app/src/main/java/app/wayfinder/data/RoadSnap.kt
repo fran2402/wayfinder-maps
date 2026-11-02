@@ -343,10 +343,17 @@ class RoadNet(lines: Sequence<String>) {
             else -> null
         }
 
+        /** Shapes snapped / kept as they were, by mode (for the pack builder's log). */
+        val stats = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
         /** [tile] with every line laid onto the roads and tracks of [net]. */
         fun snapTile(tile: TileData, net: RoadNet): TileData = TileData(tile.routes.map { r ->
             val (kinds, radius) = allowed(r.mode) ?: return@map r
-            val parts = r.parts.map { net.snap(it, kinds, radius) }
+            val parts = r.parts.map { p ->
+                net.snap(p, kinds, radius).also { q ->
+                    stats.getOrPut("${r.mode.name} ${if (q === p) "kept" else "snapped"}") { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                }
+            }
             var s = 90f; var n = -90f; var w = 180f; var e = -180f
             for (p in parts) { var k = 0; while (k < p.size) { val la = p[k]; val lo = p[k + 1]; if (la < s) s = la; if (la > n) n = la; if (lo < w) w = lo; if (lo > e) e = lo; k += 2 } }
             TileRoute(r.key, r.mode, r.osmRoute, r.ref, r.name, r.color, r.text, r.rank, parts,
