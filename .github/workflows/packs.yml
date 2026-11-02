@@ -65,9 +65,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - name: Routes from OpenStreetMap extracts
-        # Geofabrik country extracts, filtered locally to route relations: bike routes (far faster
-        # than Overpass) and public transport routes (to lay lines onto the real tracks and roads).
+      - name: Routes, roads and tracks from OpenStreetMap extracts
+        # Geofabrik country extracts, filtered locally: bike route relations (far faster than
+        # Overpass), and the roads and tracks lines are laid onto by geometry.
         # Any failure just leaves the builder to fall back to Overpass and Transitous shapes.
         continue-on-error: true
         env:
@@ -82,13 +82,21 @@ jobs:
           for p in $paths; do
             f="osm/$(echo "$p" | tr / _).osm.pbf"
             curl -fsSL --retry 3 -o "$f" "https://download.geofabrik.de/$p-latest.osm.pbf"
-            osmium tags-filter "$f" r/route=bicycle,mtb,bus,trolleybus,tram,train,subway,light_rail,monorail -o "$f.routes.pbf" --overwrite
+            osmium tags-filter "$f" r/route=bicycle,mtb -o "$f.routes.pbf" --overwrite
+            osmium tags-filter "$f" w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,busway,bus_guideway \
+              w/railway=rail,narrow_gauge,light_rail,subway,tram,monorail -o "$f.ways.pbf" --overwrite
             rm -f "$f"
           done
           osmium merge osm/*.routes.pbf -o osm/routes.pbf --overwrite
           python3 packer/scripts/osm_routes.py osm/routes.pbf "$PWD/bikes.json" "$PWD/transit.json"
+          osmium merge osm/*.ways.pbf -o osm/ways.pbf --overwrite
+          rm -f osm/*.osm.pbf.ways.pbf
+          osmium export osm/ways.pbf -c packer/osmium-export.json -f geojsonseq -o osm/ways.geojsonseq --overwrite
+          rm -f osm/ways.pbf
+          python3 packer/scripts/bucket_ways.py osm/ways.geojsonseq "$PWD/roads"
+          rm -f osm/ways.geojsonseq
       - name: Build ${{ matrix.region }}
-        run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out $PWD/bikes.json $PWD/transit.json"
+        run: ./gradlew --no-daemon -q -p packer run --args="build ${{ matrix.region }} $PWD/out $PWD/bikes.json $PWD/transit.json $PWD/roads"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

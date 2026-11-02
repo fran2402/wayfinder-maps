@@ -38,6 +38,7 @@ fun main(args: Array<String>) {
             args[1], File(args[2]),
             args.getOrNull(3)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
             args.getOrNull(4)?.let(::File)?.takeIf { it.isFile && it.length() > 0 },
+            args.getOrNull(5)?.let(::File)?.takeIf { it.isDirectory },
         )
         "packtest" -> runBlocking {
             // Runs the app's own pack download and install for one region into a scratch store.
@@ -53,6 +54,7 @@ fun main(args: Array<String>) {
             val t = store.read(OfflineTransit.Level.City, x, y)
             println("city tile: ${t?.routes?.size} routes; modes ${t?.routes?.groupingBy { it.mode }?.eachCount()}")
         }
+        "snaptest" -> snapTest(File(args[1]))
         "selftest" -> {
             selfTest()
             // `selftest <bikes.json>` also reads a bike extract, as a check of the OSM step.
@@ -75,7 +77,7 @@ private const val PART_BYTES = 1_800_000_000L
 
 private var alignerForStats: app.wayfinder.data.OsmAlign? = null
 
-private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) = runBlocking(Dispatchers.Default) {
+private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?, roadsDir: File?) = runBlocking(Dispatchers.Default) {
     // "europe@3/8" builds the third of eight shards of Europe.
     val id = spec.substringBefore('@')
     val (shard, shards) = spec.substringAfter('@', "1/1").split('/').map { it.toInt() }
@@ -112,9 +114,26 @@ private fun build(spec: String, out: File, bikeJson: File?, transitJson: File?) 
         return false
     }
 
-    // OSM public transport routes: lines are laid onto their geometry (the tracks and roads the
-    // map draws) wherever line number, kind and path match.
-    transitJson?.let { f ->
+    // Lines are laid onto OpenStreetMap's roads and tracks by geometry (buses on roads, trams on
+    // tram tracks, …). Each square's ways come from a file prepared by the workflow.
+    if (roadsDir != null) {
+        val nets = java.util.concurrent.ConcurrentHashMap<Pair<Int, Int>, app.wayfinder.data.RoadNet>()
+        val snapped = AtomicInteger()
+        fun netFor(u: Pair<Int, Int>): app.wayfinder.data.RoadNet = synchronized(nets) {
+            nets[u] ?: run {
+                if (nets.size > 20) nets.clear() // squares are worked through roughly in order
+                val f = File(roadsDir, "${u.first}_${u.second}.txt")
+                (if (f.isFile) f.bufferedReader().useLines { app.wayfinder.data.RoadNet(it) } else app.wayfinder.data.RoadNet(emptySequence()))
+                    .also { nets[u] = it }
+            }
+        }
+        store.align = { t, area ->
+            val u = app.wayfinder.data.Tiles.lonToX((area.west + area.east) / 2, 8) to app.wayfinder.data.Tiles.latToY((area.south + area.north) / 2, 8)
+            val net = netFor(u)
+            if (net.wayCount == 0) t else app.wayfinder.data.RoadNet.snapTile(t, net).also { snapped.addAndGet(it.routes.size) }
+        }
+        println("$name: laying lines onto OSM roads and tracks from $roadsDir")
+    } else transitJson?.let { f ->
         runCatching { f.reader().buffered(1 shl 16).use { app.wayfinder.data.BikeRoutes.parse(it) } }
             .onFailure { System.err.println("  transit extract unreadable: ${it.message}") }
             .getOrNull()?.let { osm ->
@@ -251,4 +270,25 @@ private fun alignTest(transit: File) {
     val area = app.wayfinder.data.Bounds(45.0, 15.0, 46.5, 16.5)
     val out = aligner.align(app.wayfinder.data.TileData(listOf(line("02"), line("3")), false), area)
     out.routes.forEach { r -> println("align: line ${r.ref} -> ${r.parts.size} part(s), ${r.parts.sumOf { it.size / 2 }} points, first ${r.parts.first().take(2)}") }
+}
+
+/** A rough bus shape next to an L-shaped street corner is laid onto the streets, through the junction. */
+private fun snapTest(dir: File) {
+    dir.mkdirs()
+    // Street A runs east along 45.8000 from 15.9500 to 15.9600; street B runs north from its end.
+    File(dir, "ways.geojsonseq").writeText(
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.95,45.8],[15.955,45.8],[15.96,45.8]]},\"properties\":{\"highway\":\"primary\"}}\n" +
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.96,45.8],[15.96,45.805],[15.96,45.81]]},\"properties\":{\"highway\":\"secondary\"}}\n" +
+        "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[15.95,45.8001],[15.96,45.8001]]},\"properties\":{\"railway\":\"tram\"}}\n"
+    )
+    val pr = ProcessBuilder("python3", "scripts/bucket_ways.py", File(dir, "ways.geojsonseq").path, File(dir, "roads").path).inheritIO().start()
+    check(pr.waitFor() == 0)
+    val f = File(dir, "roads").listFiles()!!.single()
+    val net = f.bufferedReader().useLines { app.wayfinder.data.RoadNet(it) }
+    // Off by ~15-20 m and cutting the corner diagonally.
+    val bus = floatArrayOf(45.80015f, 15.9505f, 45.80012f, 15.9570f, 45.8010f, 15.9599f, 45.8080f, 15.96018f)
+    val r = app.wayfinder.data.TileRoute("Bus|5|#000", app.wayfinder.data.TransitMode.Bus, "bus", "5", "", 0, 0, 1,
+        listOf(bus), intArrayOf(1), emptyList(), app.wayfinder.data.Bounds(45.8, 15.95, 45.81, 15.961))
+    val out = app.wayfinder.data.RoadNet.snapTile(app.wayfinder.data.TileData(listOf(r), false), net).routes.single().parts.single()
+    println("snap: ${out.size / 2} points: " + out.toList().chunked(2).joinToString(" ") { "(%.5f,%.5f)".format(it[0], it[1]) })
 }
