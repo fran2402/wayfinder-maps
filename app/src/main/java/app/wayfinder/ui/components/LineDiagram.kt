@@ -121,7 +121,7 @@ fun LineDiagram(
                         drawRoundRect(fill, tl, Size(w, h), CornerRadius(w / 2))
                         drawRoundRect(ring, tl, Size(w, h), CornerRadius(w / 2), style = Stroke(2.dp.toPx()))
                     } else {
-                        val r = (if (i == 0 || i == stops.lastIndex) 7 else 5.5f).dp.toPx()
+                        val r = (if (i == 0 || i == stops.lastIndex) 7f else 5.5f).dp.toPx()
                         drawCircle(fill, r, c)
                         drawCircle(ring, r, c, style = Stroke(2.dp.toPx()))
                     }
