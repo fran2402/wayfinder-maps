@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -130,6 +132,8 @@ fun WayfinderScreen(
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
+    // Phones: map with a bottom sheet. Tablets and unfolded foldables: a side panel beside the map.
+    val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840
     val picked = vm.highlightedLoaded
     val sheetMode = when {
         vm.tappedPlace != null -> SheetMode.Place
@@ -151,7 +155,8 @@ fun WayfinderScreen(
     val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
     // A sheet opens at its full (capped) height; dragged down it collapses to a small bar with
     // its handle and title, from which it can be swiped back up.
-    LaunchedEffect(sheetMode) {
+    LaunchedEffect(sheetMode, wide) {
+        if (wide) return@LaunchedEffect // no bottom sheet on tablets
         if (sheetMode == SheetMode.None) sheetState.hide() else sheetState.expand()
     }
 
@@ -187,7 +192,7 @@ fun WayfinderScreen(
                 left = 40.dp.roundToPx(),
                 top = (statusTop + 96.dp).roundToPx(),
                 right = 40.dp.roundToPx(),
-                bottom = (peekFor(SheetMode.Line) + navBottom + 24.dp).roundToPx(),
+                bottom = (if (wide) 24.dp else peekFor(SheetMode.Line) + navBottom + 24.dp).roundToPx(),
             )
         }
     }
@@ -218,7 +223,7 @@ fun WayfinderScreen(
                 left = 48.dp.roundToPx(),
                 top = (statusTop + 140.dp).roundToPx(),
                 right = 48.dp.roundToPx(),
-                bottom = (peekFor(SheetMode.Trip) + navBottom + 24.dp).roundToPx(),
+                bottom = (if (wide) 24.dp else peekFor(SheetMode.Trip) + navBottom + 24.dp).roundToPx(),
             )
         }
     }
@@ -231,16 +236,43 @@ fun WayfinderScreen(
         }
     }
 
-    BottomSheetScaffold(
-        scaffoldState = scaffoldState,
-        sheetPeekHeight = if (sheetMode == SheetMode.None) 0.dp else COLLAPSED + navBottom,
-        sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
-        sheetContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        sheetShadowElevation = 8.dp,
-        sheetSwipeEnabled = sheetMode != SheetMode.None,
-        sheetContent = {
+    val TopBar: @Composable (Modifier) -> Unit = { m ->
+            AnimatedContent(
+                  targetState = vm.destination != null,
+                  transitionSpec = {
+                      (fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { -it / 4 })
+                          .togetherWith(fadeOut(motion.fastEffectsSpec()))
+                  },
+                  label = "top",
+                  modifier = m,
+              ) { planning ->
+                  val dest = vm.destination
+                  if (planning && dest != null) {
+                      TripCard(
+                          origin = vm.origin,
+                          destination = dest,
+                          stops = vm.stops,
+                          onBack = vm::clearTrip,
+                          onEditOrigin = { vm.openSearch(SearchTarget.From) },
+                          onEditDestination = { vm.openSearch(SearchTarget.To) },
+                          onSwap = vm::swap,
+                          onAddStop = { vm.openSearch(SearchTarget.Stop) },
+                          onRemoveStop = vm::removeStop,
+                      )
+                  } else {
+                      SearchPill(
+                          onClick = { vm.openSearch(SearchTarget.To) },
+                          settingsOn = vm.settingsOpen,
+                          onSettings = vm::toggleSettings,
+                      )
+                  }
+              }
+  
+    }
+
+    val PanelContent: @Composable (Boolean) -> Unit = { wide ->
             val maxSheet = if (sheetMode == SheetMode.Settings) (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.82f).dp else peek
-            Box(Modifier.navigationBarsPadding().heightIn(max = maxSheet)) {
+            Box(if (wide) Modifier.fillMaxWidth() else Modifier.navigationBarsPadding().heightIn(max = maxSheet)) {
                 when (sheetMode) {
                     SheetMode.Place -> vm.tappedPlace?.let { detail ->
                         PlaceSheet(
@@ -313,13 +345,15 @@ fun WayfinderScreen(
                             departures = vm.departures?.takeIf { d -> d.lineKey == it.info.key },
                             onStop = vm::showDepartures,
                             onClose = { vm.highlight(it.info.key) },
+                            network = vm.network,
                         )
                     }
                     SheetMode.None -> Spacer(Modifier.height(1.dp))
                 }
             }
-        },
-    ) {
+    }
+
+    val MapContent: @Composable (Boolean) -> Unit = { wide ->
         Box(Modifier.fillMaxSize()) {
             with(density) {
                 MapHost(
@@ -354,37 +388,8 @@ fun WayfinderScreen(
                 )
             }
 
-            // ---------- Top: search, or the trip ----------
-            AnimatedContent(
-                targetState = vm.destination != null,
-                transitionSpec = {
-                    (fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { -it / 4 })
-                        .togetherWith(fadeOut(motion.fastEffectsSpec()))
-                },
-                label = "top",
-                modifier = Modifier.statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
-            ) { planning ->
-                val dest = vm.destination
-                if (planning && dest != null) {
-                    TripCard(
-                        origin = vm.origin,
-                        destination = dest,
-                        stops = vm.stops,
-                        onBack = vm::clearTrip,
-                        onEditOrigin = { vm.openSearch(SearchTarget.From) },
-                        onEditDestination = { vm.openSearch(SearchTarget.To) },
-                        onSwap = vm::swap,
-                        onAddStop = { vm.openSearch(SearchTarget.Stop) },
-                        onRemoveStop = vm::removeStop,
-                    )
-                } else {
-                    SearchPill(
-                        onClick = { vm.openSearch(SearchTarget.To) },
-                        settingsOn = vm.settingsOpen,
-                        onSettings = vm::toggleSettings,
-                    )
-                }
-            }
+            // ---------- Top: search, or the trip (in the side panel on tablets) ----------
+            if (!wide) TopBar(Modifier.statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth())
 
             // ---------- Bottom: hint + floating toolbar + FAB, riding above the sheet ----------
             val navBottomPx = with(density) { navBottom.roundToPx() }
@@ -396,7 +401,7 @@ fun WayfinderScreen(
                     .layout { measurable, constraints ->
                         val placeable = measurable.measure(constraints.copy(minHeight = 0))
                         val sheetTop = runCatching { sheetState.requireOffset() }.getOrNull()
-                            ?.takeIf { sheetMode != SheetMode.None }
+                            ?.takeIf { sheetMode != SheetMode.None && !wide }
                             ?: Float.MAX_VALUE
                         val bottom = minOf(sheetTop.toInt(), constraints.maxHeight - navBottomPx) - gapPx
                         val y = bottom - placeable.height
@@ -431,7 +436,8 @@ fun WayfinderScreen(
                     }
                 }
                 MapToolbar(
-                    showLayers = !vm.planning,
+                    // On tablets the layer buttons live in the side panel; only the location button floats.
+                    showLayers = !vm.planning && !wide,
                     linesOn = vm.showTransit,
                     linesLoading = vm.transitLoading,
                     bikesOn = vm.showBike,
@@ -449,6 +455,58 @@ fun WayfinderScreen(
                 )
             }
         }
+    }
+
+    if (wide) {
+        Row(Modifier.fillMaxSize()) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.width(400.dp).fillMaxHeight(),
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.statusBarsPadding().navigationBarsPadding().padding(top = 12.dp),
+                ) {
+                    TopBar(Modifier.padding(horizontal = 16.dp).fillMaxWidth())
+                    if (!vm.planning) {
+                        PanelLayerButtons(
+                            linesOn = vm.showTransit,
+                            bikesOn = vm.showBike,
+                            onLines = { syncViewport(); vm.toggleTransit() },
+                            onBikes = { syncViewport(); vm.toggleBike() },
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        if (sheetMode == SheetMode.None) {
+                            Text(
+                                "Search for a place, or show Lines to see public transport around you.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(24.dp),
+                            )
+                        } else {
+                            PanelContent(true)
+                        }
+                    }
+                }
+            }
+            androidx.compose.material3.VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Box(Modifier.weight(1f).fillMaxHeight()) { MapContent(true) }
+        }
+    } else
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = if (sheetMode == SheetMode.None) 0.dp else COLLAPSED + navBottom,
+        sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+        sheetContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        sheetShadowElevation = 8.dp,
+        sheetSwipeEnabled = sheetMode != SheetMode.None,
+        sheetContent = {
+            PanelContent(false)
+        },
+    ) {
+        MapContent(false)
     }
 
     // ---------- Search (covers everything) ----------
@@ -510,6 +568,39 @@ private fun TripSheetHeader(
                     },
                     shape = CircleShape,
                 )
+            }
+        }
+    }
+}
+
+/** Lines / Bikes as a connected button pair, for the tablet side panel. */
+@Composable
+private fun PanelLayerButtons(
+    linesOn: Boolean,
+    bikesOn: Boolean,
+    onLines: () -> Unit,
+    onBikes: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(androidx.compose.material3.ButtonGroupDefaults.ConnectedSpaceBetween),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        listOf(Triple("Lines", linesOn, onLines), Triple("Bikes", bikesOn, onBikes)).forEachIndexed { i, (label, on, click) ->
+            androidx.compose.material3.ToggleButton(
+                checked = on,
+                onCheckedChange = { click() },
+                shapes = if (i == 0) androidx.compose.material3.ButtonGroupDefaults.connectedLeadingButtonShapes()
+                else androidx.compose.material3.ButtonGroupDefaults.connectedTrailingButtonShapes(),
+                modifier = Modifier.weight(1f).height(48.dp),
+            ) {
+                Icon(
+                    if (i == 0) (if (on) Ph.Filled.Bus else Ph.Bus) else (if (on) Ph.Filled.Bicycle else Ph.Bicycle),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(label, style = MaterialTheme.typography.labelLarge)
             }
         }
     }

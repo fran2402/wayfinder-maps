@@ -665,7 +665,14 @@ object TransitRoutes {
             else null
 
         val lines = StringBuilder(1 shl 16).append("""{"type":"FeatureCollection","features":[""")
-        val stopFeatures = LinkedHashMap<String, Pair<Int, String>>() // id -> (rank, json)
+        // One marker per station: platforms of the same name within ~2 km are one place, and
+        // the number of lines meeting there sets how the map draws it (dot or interchange).
+        class StopAcc(val name: String) {
+            var lat = 0.0; var lon = 0.0; var count = 0
+            val lines = HashSet<String>()
+            var rank = -1; var color = ""; var key = ""; var mode = ""
+        }
+        val stopGroups = LinkedHashMap<String, StopAcc>()
         val loaded = ArrayList<LoadedLine>()
         var first = true
         for ((key, acc) in byKey) {
@@ -696,16 +703,10 @@ object TransitRoutes {
             }
 
             if (withStops) for (st in acc.stops) {
-                val id = st.id.ifBlank { "${st.lat},${st.lon}" }
-                val prev = stopFeatures[id]
-                if (prev == null || prev.first < r.rank) {
-                    stopFeatures[id] = r.rank to buildString {
-                        append("""{"type":"Feature","geometry":{"type":"Point","coordinates":[""")
-                        appendCoord(st.lon.toFloat()).append(',').appendCoord(st.lat.toFloat())
-                        append("""]},"properties":{"color":"$colorHex","rank":${r.rank},"key":""").append(quote(key))
-                        append(""","mode":"${r.mode.name}","name":""").append(quote(st.name)).append("}}")
-                    }
-                }
+                val g = stopGroups.getOrPut(stationKey(st)) { StopAcc(st.name) }
+                g.lat += st.lat; g.lon += st.lon; g.count++
+                g.lines += key
+                if (r.rank > g.rank) { g.rank = r.rank; g.color = colorHex; g.key = key; g.mode = r.mode.name }
             }
             if (r.ref.isNotBlank()) {
                 loaded += LoadedLine(
@@ -717,10 +718,24 @@ object TransitRoutes {
         }
         lines.append("]}")
         val stops = StringBuilder("""{"type":"FeatureCollection","features":[""")
-        stopFeatures.values.forEachIndexed { i, (_, json) -> if (i > 0) stops.append(','); stops.append(json) }
+        var firstStop = true
+        for (g in stopGroups.values) {
+            if (!firstStop) stops.append(',')
+            firstStop = false
+            stops.append("""{"type":"Feature","geometry":{"type":"Point","coordinates":[""")
+            stops.appendCoord((g.lon / g.count).toFloat()).append(',').appendCoord((g.lat / g.count).toFloat())
+            stops.append("""]},"properties":{"color":"${g.color}","rank":${g.rank},"n":${g.lines.size},"lines":[""")
+            g.lines.forEachIndexed { i, k -> if (i > 0) stops.append(','); stops.append(quote(k)) }
+            stops.append("""],"key":""").append(quote(g.key))
+            stops.append(""","mode":"${g.mode}","name":""").append(quote(g.name)).append("}}")
+        }
         stops.append("]}")
         return TransitData(lines.toString(), stops.toString(), loaded, zoomFiltered)
     }
+
+    /** Same station: same name (ignoring case and punctuation) within about 2 km. */
+    fun stationKey(st: StopRef): String =
+        st.name.lowercase().filter { it.isLetterOrDigit() } + "@" + Math.round(st.lat * 50) + "," + Math.round(st.lon * 50)
 
     /** Map image name for a line's number badge. */
     fun pillId(key: String) = "pill-" + Integer.toHexString(key.hashCode())

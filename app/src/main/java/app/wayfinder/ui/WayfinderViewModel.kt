@@ -301,6 +301,9 @@ class WayfinderViewModel(application: Application) : AndroidViewModel(applicatio
     /** Key of the line picked in the line pills, or null for all lines. */
     var highlightedLine by mutableStateOf<String?>(null)
         private set
+    /** Every line loaded on the map, for the line diagram's connections. */
+    val network: List<LoadedLine> get() = transitData?.routes.orEmpty()
+
     /** The picked line with its stops, for the line sheet. */
     val highlightedLoaded: LoadedLine?
         get() = if (highlightedLine == null) null else selectedLine

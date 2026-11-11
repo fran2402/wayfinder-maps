@@ -365,8 +365,12 @@ class MapController(private val context: Context) {
             "net-rail-ties" to only("Train"), "net-tram-track" to only("Tram"),
             "net-ferry" to only("Ferry"), "net-other" to only("Other"),
         ).forEach { (layer, base) -> s.getLayer(layer)?.filter("[\"all\",$base,$filter]") }
-        s.getLayer("net-stop-labels")?.filter(if (key == null) none else filter)
-        s.getLayer("net-stops")?.filter(filter)
+        // Stations belong to every line that stops there, so a picked line keeps all of its own.
+        val stopFilter = if (key == null) byMode else "[\"all\",$byMode,[\"in\",${JSONObject.quote(key)},[\"get\",\"lines\"]]]"
+        val interchange = "[\">=\",[\"coalesce\",[\"get\",\"n\"],1],2]"
+        s.getLayer("net-stop-labels")?.filter(if (key == null) none else stopFilter)
+        s.getLayer("net-stops")?.filter("[\"all\",$interchange,$stopFilter]")
+        s.getLayer("net-stops-minor")?.filter("[\"all\",[\"!\",$interchange],$stopFilter]")
         s.getLayer("net-line-labels")?.filter("[\"all\",[\"has\",\"pill\"],$filter]")
 
         // The base map's rail stays as faint context; hide it while a single line is focused.

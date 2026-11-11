@@ -173,6 +173,8 @@ fun LineSheet(
     departures: app.wayfinder.ui.WayfinderViewModel.DepartureBoard?,
     onStop: (app.wayfinder.data.StopRef) -> Unit,
     onClose: () -> Unit,
+    /** Every line loaded around it, to show where it meets and runs alongside others. */
+    network: List<LoadedLine> = emptyList(),
 ) {
     val colors = MaterialTheme.colorScheme
     val info = line.info
@@ -222,51 +224,8 @@ fun LineSheet(
 
         if (departures != null) DepartureCard(departures, lineColor)
 
-        if (line.stops.isNotEmpty()) {
-            Surface(shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(vertical = 8.dp)) {
-                    val stops = line.stops.take(80)
-                    stops.forEachIndexed { i, stop ->
-                        val terminal = i == 0 || i == stops.lastIndex
-                        val selected = departures?.stop?.id == stop.id && stop.id.isNotBlank()
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .clickable { onStop(stop) }
-                                .background(if (selected) colors.secondaryContainer else Color.Transparent)
-                                .padding(horizontal = 18.dp),
-                        ) {
-                            Canvas(Modifier.width(24.dp).fillMaxHeight()) {
-                                val x = size.width / 2
-                                val mid = size.height / 2
-                                val track = 6.dp.toPx()
-                                if (i > 0) drawLine(lineColor, Offset(x, 0f), Offset(x, mid), strokeWidth = track)
-                                if (i < stops.lastIndex) drawLine(lineColor, Offset(x, mid), Offset(x, size.height), strokeWidth = track)
-                                val r = (if (terminal) 7 else 5).dp.toPx()
-                                drawCircle(Color.White, radius = r, center = Offset(x, mid))
-                                drawCircle(lineColor, radius = r, center = Offset(x, mid), style = Stroke(width = (if (terminal) 4 else 3).dp.toPx()))
-                            }
-                            Spacer(Modifier.width(14.dp))
-                            Text(
-                                stop.name,
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight(if (terminal || selected) 650 else 450)),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (selected) Icon(Ph.Clock, contentDescription = "Showing departures", tint = colors.onSecondaryContainer, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-            Text(
-                "Tap a stop to see its departures",
-                style = MaterialTheme.typography.bodySmall,
-                color = colors.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
+        if (line.stops.size >= 2) {
+            LineDiagram(line = line, network = network, selectedStopId = departures?.stop?.id, onStop = onStop)
         }
     }
 }

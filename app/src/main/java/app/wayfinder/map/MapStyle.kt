@@ -103,7 +103,7 @@ object MapStyle {
     /** Layers shown only while the public-transport overlay is switched on. */
     val networkLayers = listOf(
         "net-tiles-casing", "net-tiles", "net-lines-casing", "net-lines",
-        "net-stops", "net-line-labels", "net-stations", "net-rail-ties", "net-tram-track", "net-ferry", "net-other", "net-stop-labels",
+        "net-stops", "net-stops-minor", "net-line-labels", "net-stations", "net-rail-ties", "net-tram-track", "net-ferry", "net-other", "net-stop-labels",
     )
 
     /** Layers whose opacity follows the highlighted line. */
@@ -497,15 +497,23 @@ object MapStyle {
                 "text-halo-blur" to 0.5,
             )))
 
-        add(layer("net-stops", "circle", source = SRC_NETWORK_STOPS, minzoom = 12.0, visibility = netVis,
+        // Stations the metro-map way: a white dot with a dark ring, larger where lines meet
+        // ("n" lines stop there), so interchanges stand out.
+        val interchange = arr(">=", arr("coalesce", get("n"), 1), 2)
+        fun stations(id: String, minzoom: Double, filter: JSONArray) = layer(id, "circle", source = SRC_NETWORK_STOPS, minzoom = minzoom, visibility = netVis,
+            filter = filter,
             paint = obj(
-                "circle-color" to p.surface,
+                "circle-color" to if (p.dark) "#EEF1F4" else "#FFFFFF",
                 "circle-radius" to arr("interpolate", arr("linear"), arr("zoom"),
-                    12, arr("case", arr("<=", get("rank"), 1), 1.5, 2.5),
-                    16, arr("case", arr("<=", get("rank"), 1), 3.5, 5.0)),
-                "circle-stroke-color" to get("color"),
-                "circle-stroke-width" to zoomLinear(12 to 1.2, 16 to 2.2),
-            )))
+                    11, arr("case", interchange, 3.2, 2.0),
+                    14, arr("case", interchange, 5.5, 3.4),
+                    17, arr("case", interchange, 8.0, 5.0)),
+                "circle-stroke-color" to if (p.dark) "#0B0D10" else "#23272B",
+                "circle-stroke-width" to zoomLinear(11 to 1.4, 14 to 2.0, 17 to 2.6),
+            ))
+        // Single-line stops from street level; interchanges already further out.
+        add(stations("net-stops-minor", 13.0, arr("!", interchange)))
+        add(stations("net-stops", 11.0, interchange))
         add(layer("net-line-labels", "symbol", source = SRC_NETWORK, minzoom = 14.0, visibility = netVis,
             filter = arr("has", "pill"),
             layout = obj(
